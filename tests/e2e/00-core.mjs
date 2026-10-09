@@ -9,8 +9,8 @@ export default async function ({ a, check }) {
   const page = await a.rest('POST', '/items/pages', {
     title: 'Home', slug, status: 'published', category: cat.id,
     blocks: [
-      { collection: 'block_hero', item: { headline: 'Benvenuti' }, sort: 1 },
-      { collection: 'block_text', item: { body: 'Ciao' }, sort: 2 },
+      { collection: 'block_hero', item: { headline: 'Welcome' }, sort: 1 },
+      { collection: 'block_text', item: { body: 'Hello' }, sort: 2 },
       { collection: 'block_cards', item: { title: 'Cards', cards: [{ title: 'Uno', sort: 1 }, { title: 'Due', sort: 2 }] }, sort: 3 },
     ],
   });
@@ -18,7 +18,7 @@ export default async function ({ a, check }) {
   const id = page.data.id;
   const read = await a.rest('GET', `/items/pages/${id}?fields=title,category.code,blocks.collection,blocks.sort,blocks.item.*,blocks.item.cards.*`);
   const blocks = read.data.blocks.map((b) => [b.collection, b.sort, b.item.headline || b.item.body || b.item.title, (b.item.cards || []).map((c) => c.title)]);
-  check('nested read: blocks, union items and children', JSON.stringify(blocks) === JSON.stringify([['block_hero', 1, 'Benvenuti', []], ['block_text', 2, 'Ciao', []], ['block_cards', 3, 'Cards', ['Uno', 'Due']]]), blocks);
+  check('nested read: blocks, union items and children', JSON.stringify(blocks) === JSON.stringify([['block_hero', 1, 'Welcome', []], ['block_text', 2, 'Hello', []], ['block_cards', 3, 'Cards', ['Uno', 'Due']]]), blocks);
 
   // filters / search / counts / errors
   const some = await a.rest('GET', `/items/pages?filter=${encodeURIComponent(JSON.stringify({ blocks: { _some: { collection: { _eq: 'block_text' } } }, slug: { _eq: slug } }))}&meta=filter_count`);

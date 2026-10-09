@@ -8,7 +8,7 @@
 // the API: arrays replace the whole relation (items without `id` are created,
 // items with `id` are updated, omitted ones are removed or detached).
 
-import { api, assetUrl } from './api.js';
+import { api, thumbUrl } from './api.js';
 import { button, fail, h, modal, replace } from './dom.js';
 import * as S from './schema.js';
 import { registry } from './registry.js';
@@ -224,7 +224,7 @@ function fileThumb(id, meta) {
   const name = meta?.filename_download || shortId(id);
   if (meta?.type && !String(meta.type).startsWith('image/')) return h('span', { class: 'file-chip' }, name);
   return h('img', {
-    src: assetUrl(id),
+    src: thumbUrl(id, meta?.type, 160),
     alt: name,
     class: 'thumb',
     onError: (e) => e.target.replaceWith(h('span', { class: 'file-chip' }, name)),

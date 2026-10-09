@@ -24,6 +24,7 @@ on any failure. Server logs: `target/e2e/*.log`.
 | `05-security` | SQL injection, forged JWTs, mass assignment, row/field permissions, filter/sort/search/count oracles, path traversal, malformed input, brute force |
 | `06-realtime` | subscriptions, filters, per-client permissions, validation, limits, suspended users, two instances, schema propagation |
 | `07-storage` | S3-compatible bucket next to the disk: upload/replace/delete, 12 MB file, signed redirects (tampered signature, other key), permissions before signing, orphan cleanup, multi-location, `ferro storage list/check/migrate`, startup errors, promotion bucket → disk and back. Skipped unless `E2E_S3_ENDPOINT` is set |
+| `08-images` | resize, every fit mode, cover position, crop, JPEG / PNG / WebP output, quality, transparency, validation (17 invalid requests), non-images and corrupt files, a decompression bomb, permissions, `ETag` / `304`, a burst of 24 concurrent transformations; pixels are checked by decoding the real output |
 
 Storage suite: needs an S3-compatible server with a bucket, e.g. SeaweedFS (`weed server -s3 -s3.port=19000 -s3.config=s3.json`,
 bucket created with `curl -X POST http://127.0.0.1:8888/buckets/ferro-test/`) and then

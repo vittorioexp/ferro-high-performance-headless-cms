@@ -52,6 +52,12 @@ pub struct Config {
     pub admin_dir: Option<PathBuf>,
     pub cors_origins: Vec<String>,
     pub db_max_connections: u32,
+    /// Image transformations (`/assets/:id?width=...`).
+    pub image_limits: ferro_engine::images::Limits,
+    /// Transformations running at the same time (each decodes a whole image in memory).
+    pub image_concurrency: usize,
+    /// Budget of the per-instance cache of transformed images; 0 disables it.
+    pub image_cache_bytes: usize,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -103,6 +109,12 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .collect(),
             db_max_connections: env_num("FERRO_DB_MAX_CONNECTIONS", 10)?,
+            image_limits: ferro_engine::images::Limits {
+                max_dimension: env_num("FERRO_IMAGE_MAX_DIMENSION", 4096)?,
+                max_input_pixels: env_num::<u64>("FERRO_IMAGE_MAX_INPUT_MEGAPIXELS", 64)? * 1_000_000,
+            },
+            image_concurrency: env_num("FERRO_IMAGE_CONCURRENCY", std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2))?,
+            image_cache_bytes: env_num::<usize>("FERRO_IMAGE_CACHE_MB", 64)? * 1024 * 1024,
         })
     }
 }
@@ -118,6 +130,8 @@ pub struct Inner {
     pub config: Config,
     pub auth: AuthConfig,
     pub storages: Storages,
+    pub image_gate: tokio::sync::Semaphore,
+    pub image_cache: ferro_engine::images::TransformCache,
 }
 
 #[derive(Clone)]
@@ -195,6 +209,7 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         .context("bootstrap")?;
     let schema = schema_store::load_schema(&pool).await?;
     let storages = ferro_storage::build(&config.storage).await.context("storage")?;
+    let (config_image_concurrency, config_image_cache_bytes) = (config.image_concurrency, config.image_cache_bytes);
     let auth = AuthConfig {
         secret: config.secret.clone(),
         access_ttl_secs: config.access_ttl_secs,
@@ -209,6 +224,8 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         config,
         auth,
         storages,
+        image_gate: tokio::sync::Semaphore::new(config_image_concurrency.max(1)),
+        image_cache: ferro_engine::images::TransformCache::new(config_image_cache_bytes),
     })))
 }
 

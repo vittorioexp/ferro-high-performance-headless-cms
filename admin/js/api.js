@@ -149,6 +149,17 @@ export function assetUrl(id, extra = '') {
   return `${state.base}/assets/${id}?access_token=${encodeURIComponent(state.access || '')}${extra}`;
 }
 
+/** Raster types the server can resize (SVG and the like are served as they are). */
+const RESIZABLE = /^image\/(jpeg|png|gif|webp|bmp|tiff)$/;
+
+/**
+ * URL of a square thumbnail (`size` px, cropped to fill) for list views and previews, so a grid of large photos
+ * does not download every original. Falls back to the original when the type is unknown or not resizable.
+ */
+export function thumbUrl(id, type, size = 240) {
+  return RESIZABLE.test(String(type || '')) ? assetUrl(id, `&width=${size}&height=${size}&fit=cover`) : assetUrl(id);
+}
+
 /** Download an authenticated resource as a file. */
 export async function download(path, filename, query) {
   const headers = state.access ? { Authorization: `Bearer ${state.access}` } : {};

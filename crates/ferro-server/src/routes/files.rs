@@ -1,12 +1,15 @@
 use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, ETAG, LOCATION};
+use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, ETAG, IF_NONE_MATCH, LOCATION};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Json;
 use bytes::Bytes;
 use ferro_core::system::{FILES, FOLDERS};
 use ferro_engine::files::{self as engine_files, BlobRef, Upload};
+use ferro_core::hash::sha256_hex;
+use ferro_engine::images::{self, RawParams, TransformParams};
 use ferro_engine::items;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -142,10 +145,65 @@ pub async fn remove(State(st): State<AppState>, Acc(acc): Acc, Path(id): Path<Uu
 #[derive(Deserialize, Default)]
 pub struct AssetQuery {
     download: Option<String>,
+    // image transformations, see `ferro_engine::images`
+    width: Option<String>,
+    height: Option<String>,
+    fit: Option<String>,
+    position: Option<String>,
+    crop: Option<String>,
+    format: Option<String>,
+    quality: Option<String>,
+    #[serde(alias = "withoutEnlargement")]
+    without_enlargement: Option<String>,
+    background: Option<String>,
+}
+
+impl AssetQuery {
+    fn raw_params(&self) -> RawParams {
+        RawParams {
+            width: self.width.clone(),
+            height: self.height.clone(),
+            fit: self.fit.clone(),
+            position: self.position.clone(),
+            crop: self.crop.clone(),
+            format: self.format.clone(),
+            quality: self.quality.clone(),
+            without_enlargement: self.without_enlargement.clone(),
+            background: self.background.clone(),
+        }
+    }
+}
+
+/// `If-None-Match` may carry several (possibly weak) validators.
+fn etag_matches(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get(IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').any(|t| t.trim().trim_start_matches("W/").trim_matches('"') == etag || t.trim() == "*"))
+        .unwrap_or(false)
+}
+
+/// `photo.png` + jpg → `photo.jpg`
+fn with_extension(filename: &str, ext: &str) -> String {
+    let stem = filename.rsplit_once('.').map(|(s, _)| s).filter(|s| !s.is_empty()).unwrap_or(filename);
+    format!("{stem}.{ext}")
+}
+
+fn internal(msg: impl ToString) -> ApiError {
+    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", msg.to_string())
 }
 
 /// Binary content. Requires read permission on the file (public policy for public assets).
-pub async fn asset(State(st): State<AppState>, Acc(acc): Acc, Path(id): Path<String>, Query(q): Query<AssetQuery>) -> ApiResult<Response> {
+///
+/// Query: `download`, and the image transformations `width`, `height`, `fit`, `position`, `crop`, `format`,
+/// `quality`, `withoutEnlargement`, `background` (documented in docs/ARCHITECTURE.md §10).
+pub async fn asset(
+    State(st): State<AppState>,
+    Acc(acc): Acc,
+    Path(id): Path<String>,
+    Query(q): Query<AssetQuery>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
     let ctx = ctx(&st, acc);
     let mut conn = st.pool.acquire().await?;
     let meta = items::read_one(
@@ -157,10 +215,60 @@ pub async fn asset(State(st): State<AppState>, Acc(acc): Acc, Path(id): Path<Str
     )
     .await?;
     drop(conn);
+    let params = TransformParams::parse(&q.raw_params(), &st.config.image_limits)?;
     let storage = st.storages.resolve(meta.get("storage").and_then(|v| v.as_str())).clone();
     let content_type = meta.get("type").and_then(|v| v.as_str()).unwrap_or("application/octet-stream").to_string();
     let filename = meta.get("filename_download").and_then(|v| v.as_str()).unwrap_or("file").replace(['"', '\\', '\r', '\n'], "_");
-    let disposition = format!("{}; filename=\"{filename}\"", if q.download.is_some() { "attachment" } else { "inline" });
+    let checksum = meta.get("checksum").and_then(|v| v.as_str()).map(String::from);
+    let disposition_kind = if q.download.is_some() { "attachment" } else { "inline" };
+
+    // the validator of a variant depends on the original's checksum and on the (normalised) parameters
+    let etag = checksum.as_ref().map(|c| {
+        if params.is_noop() {
+            c.clone()
+        } else {
+            format!("{c}-{}", &sha256_hex(params.cache_key().as_bytes())[..12])
+        }
+    });
+    if let Some(e) = &etag {
+        if etag_matches(&headers, e) {
+            return Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(ETAG, format!("\"{e}\""))
+                .header(CACHE_CONTROL, "private, max-age=3600")
+                .body(Body::empty())
+                .map_err(internal);
+        }
+    }
+
+    if !params.is_noop() {
+        let key = format!("{id}:{}:{}", checksum.as_deref().unwrap_or(""), params.cache_key());
+        let (data, format) = match st.image_cache.get(&key) {
+            Some(hit) => hit,
+            None => {
+                let original = storage.get(&id).await?;
+                // decoding holds the whole bitmap in memory: only a few at a time
+                let _permit = st.image_gate.acquire().await.map_err(internal)?;
+                let (p, limits) = (params.clone(), st.config.image_limits);
+                let out = tokio::task::spawn_blocking(move || images::transform(&original, &p, &limits))
+                    .await
+                    .map_err(internal)??;
+                st.image_cache.put(key, out.data.clone(), out.format);
+                (out.data, out.format)
+            }
+        };
+        let name = if params.format.is_some() { with_extension(&filename, format.extension()) } else { filename };
+        let mut builder = Response::builder()
+            .header(CONTENT_TYPE, format.content_type())
+            .header(CONTENT_DISPOSITION, format!("{disposition_kind}; filename=\"{name}\""))
+            .header(CACHE_CONTROL, "private, max-age=3600");
+        if let Some(e) = &etag {
+            builder = builder.header(ETAG, format!("\"{e}\""));
+        }
+        return builder.body(Body::from(data)).map_err(internal);
+    }
+
+    let disposition = format!("{disposition_kind}; filename=\"{filename}\"");
     // object stores can serve the bytes themselves through a short-lived signed URL (permissions were checked above)
     if let Some(url) = storage.presigned_get(&id, std::time::Duration::from_secs(300), &disposition, &content_type).await? {
         return Response::builder()
@@ -168,19 +276,17 @@ pub async fn asset(State(st): State<AppState>, Acc(acc): Acc, Path(id): Path<Str
             .header(LOCATION, url)
             .header(CACHE_CONTROL, "no-store")
             .body(Body::empty())
-            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", e.to_string()));
+            .map_err(internal);
     }
     let data = storage.get(&id).await?;
     let mut builder = Response::builder()
         .header(CONTENT_TYPE, content_type)
         .header(CONTENT_DISPOSITION, disposition)
         .header(CACHE_CONTROL, "private, max-age=3600");
-    if let Some(c) = meta.get("checksum").and_then(|v| v.as_str()) {
-        builder = builder.header(ETAG, format!("\"{c}\""));
+    if let Some(e) = &etag {
+        builder = builder.header(ETAG, format!("\"{e}\""));
     }
-    builder
-        .body(Body::from(data))
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", e.to_string()))
+    builder.body(Body::from(data)).map_err(internal)
 }
 
 pub async fn list_folders(State(st): State<AppState>, Acc(acc): Acc, Query(q): Query<ItemsQuery>) -> ApiResult<Json<Value>> {

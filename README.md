@@ -92,7 +92,7 @@ cargo test                # unit tests of the crates (no database needed)
 (cd admin && node --test test/*.test.mjs)   # Admin UI tests (Node >= 20)
 ```
 
-> Status: builds without warnings; 71 Rust tests + 30 Admin UI tests + 358 integration
+> Status: builds without warnings; 84 Rust tests + 31 Admin UI tests + 430 integration
 > checks + 36 browser checks, run end to end against PostgreSQL 16 with two environments,
 > an S3-compatible server and a real browser (see "Known limits" in
 > docs/ARCHITECTURE.md). The CI workflow is written but has not yet run on a real runner.

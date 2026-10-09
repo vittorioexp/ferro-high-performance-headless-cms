@@ -56,3 +56,16 @@ test('schema helpers build the fields needed by the form', () => {
   assert.equal(S.labelOf('categories', { id: 'abcdef012345' }), 'abcdef01');
   assert.equal(S.getCollection('ferro_files').name, 'ferro_files');
 });
+
+test('thumbUrl asks for a cropped thumbnail only for rasters the server can resize', async () => {
+  const { configure, thumbUrl, assetUrl } = await import('../js/api.js');
+  configure({ base: 'http://x' });
+  const id = '0199a000-0000-7000-8000-000000000001';
+  for (const type of ['image/jpeg', 'image/png', 'image/gif', 'image/webp']) {
+    assert.match(thumbUrl(id, type, 160), /\/assets\/[^?]+\?access_token=[^&]*&width=160&height=160&fit=cover$/, type);
+  }
+  for (const type of ['image/svg+xml', 'application/pdf', 'text/plain', '', undefined, null]) {
+    assert.equal(thumbUrl(id, type), assetUrl(id), String(type));
+  }
+  assert.match(thumbUrl(id, 'image/png'), /width=240&height=240/, 'default size');
+});

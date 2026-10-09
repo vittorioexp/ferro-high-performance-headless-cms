@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
 import { Env, BIN, ROOT, cli, rnd } from './lib.mjs';
+import { decodePng, quadrants } from './png.mjs';
 
 const sha = (buf) => createHash('sha256').update(buf).digest('hex');
 
@@ -141,6 +142,13 @@ export default async function ({ b, check }) {
     await setPublicFiles(true);
     const pub2 = await fetch(`${c.url}/assets/${id}`, { redirect: 'manual' });
     check('public files redirect to the signed URL too', pub2.status === 307, pub2.status);
+    // transformations are produced by the server from the object, never by redirecting to the bucket
+    const pic = await upload(quadrants(200, 100), 'pic.png', 'image/png');
+    const small = await asset(pic.json.data.id + '?width=50');
+    const smallImg = small.status === 200 ? decodePng(Buffer.from(await small.arrayBuffer())) : null;
+    check('a transformed image from the bucket is served by Ferro (200, resized), not redirected', !!smallImg && smallImg.width === 50 && smallImg.height === 25 && !small.headers.get('location'), small.status);
+    check('…while the original of the same image still redirects', (await asset(pic.json.data.id)).status === 307);
+    await c.rest('DELETE', `/files/${pic.json.data.id}`); // keep the file counts the later checks rely on
     const dl = await fetch(`${c.url}/assets/${id}?download=1`, { redirect: 'manual', headers: { Authorization: `Bearer ${c.token}` } });
     const dlRes = await fetch(dl.headers.get('location') || endpoint);
     check('?download makes the signed URL an attachment', dl.status === 307 && /^attachment/.test(dlRes.headers.get('content-disposition') || ''), dlRes.headers.get('content-disposition'));

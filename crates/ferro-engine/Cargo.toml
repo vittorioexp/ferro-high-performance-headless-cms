@@ -13,6 +13,7 @@ bytes.workspace = true
 chrono.workspace = true
 futures.workspace = true
 hex.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 reqwest.workspace = true
 jsonwebtoken.workspace = true
 serde.workspace = true

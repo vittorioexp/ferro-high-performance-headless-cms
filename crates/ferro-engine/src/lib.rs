@@ -8,6 +8,7 @@ pub mod error;
 pub mod files;
 pub mod flows;
 pub mod graphql;
+pub mod images;
 pub mod items;
 pub mod permissions;
 pub mod query;

@@ -236,6 +236,8 @@ pub async fn upload(ctx: &Ctx, conn: &mut PgConnection, storage: &dyn Storage, u
         .content_type
         .filter(|c| !c.is_empty() && c != "application/octet-stream")
         .unwrap_or_else(|| mime_from_name(&up.filename));
+    // header-only read: images get their dimensions, everything else (and corrupt files) stays null
+    let dims = crate::images::dimensions(&up.data);
     storage.put(&id.to_string(), up.data, Some(&content_type)).await?;
     let stale = existing
         .as_ref()
@@ -251,6 +253,8 @@ pub async fn upload(ctx: &Ctx, conn: &mut PgConnection, storage: &dyn Storage, u
     row.insert("type".into(), Value::String(content_type));
     row.insert("filesize".into(), Value::from(size));
     row.insert("checksum".into(), Value::String(checksum));
+    row.insert("width".into(), dims.map(|d| Value::from(d.0)).unwrap_or(Value::Null));
+    row.insert("height".into(), dims.map(|d| Value::from(d.1)).unwrap_or(Value::Null));
     if existing.is_none() {
         let title = up.title.unwrap_or_else(|| title_from_name(&up.filename));
         row.insert("title".into(), Value::String(title));

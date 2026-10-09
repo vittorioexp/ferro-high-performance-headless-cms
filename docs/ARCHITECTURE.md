@@ -783,7 +783,9 @@ original applies (checked **before** anything is decoded), and the response has 
 - Uploads record `width` and `height` of every supported image in `ferro_files` (read from the header, no decoding).
 - **Protection against abuse.** The size is read from the header first: an image above `FERRO_IMAGE_MAX_INPUT_MEGAPIXELS`
   (64) is refused before decoding (a small file can declare a gigantic bitmap), and decoding has a memory ceiling derived
-  from the same limit. At most `FERRO_IMAGE_CONCURRENCY` (default: the number of CPUs) transformations run at the same
+  from the same limit. Every computed size is checked against `FERRO_IMAGE_MAX_DIMENSION` **before** anything is allocated, so an
+  extreme aspect ratio (`width=4096` on a 1×4000 image) is a 400, not a multi-gigabyte bitmap; `cover` cuts the needed window
+  out of the original first and scales only that. At most `FERRO_IMAGE_CONCURRENCY` (default: the number of CPUs) transformations run at the same
   time, on blocking threads, so image work never stalls the request loop; the others wait their turn.
 - **Caching.** Results are kept in a per-instance LRU cache of `FERRO_IMAGE_CACHE_MB` (64; `0` turns it off), keyed by file id,
   checksum and the *normalised* parameters (`format=JPEG&width=77` and `width=77&format=jpg` are the same variant). The
@@ -1023,10 +1025,10 @@ services through `request`); arbitrary Rust code has to be compiled into the bin
 ### Known limits
 
 - **State of verification** (2026-10-09): the workspace builds without warnings;
-  71 Rust tests, 30 Admin UI tests, **358 integration checks** over two environments
+  84 Rust tests, 31 Admin UI tests, **430 integration checks** over two environments
   with a real PostgreSQL 16 (schema, sync, flows, GraphQL, security, realtime —
-  including two instances on the same database — and storage against an
-  S3-compatible server) and **36 checks in a real browser** (Edge/Chromium). They run
+  including two instances on the same database — storage against an
+  S3-compatible server, and image transformations checked pixel by pixel) and **36 checks in a real browser** (Edge/Chromium). They run
   with `scripts/ci.sh [browser]` (GitHub workflow in `.github/workflows/ci.yml`);
   details in `tests/README.md`.
 - Never run: the Docker image, the compose file, the example Jenkinsfile and the first

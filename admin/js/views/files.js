@@ -1,6 +1,6 @@
 // File library: folders, upload (button or drag & drop), metadata, replace, delete.
 
-import { api, assetUrl } from '../api.js';
+import { api, assetUrl, thumbUrl } from '../api.js';
 import { add, button, confirmDialog, fail, h, inputEl, labeled, modal, replace, selectEl, toast } from '../dom.js';
 import { clearOptionCache } from '../form.js';
 import { formatBytes, truncate } from '../util.js';
@@ -11,7 +11,7 @@ function thumb(f) {
   if (f.type && !String(f.type).startsWith('image/')) return h('div', { class: 'file-chip big' }, (f.type.split('/')[1] || 'file').toUpperCase());
   return h('img', {
     class: 'thumb',
-    src: assetUrl(f.id),
+    src: thumbUrl(f.id, f.type, 320),
     alt: f.filename_download || '',
     loading: 'lazy',
     onError: (e) => e.target.replaceWith(h('div', { class: 'file-chip big' }, 'FILE')),

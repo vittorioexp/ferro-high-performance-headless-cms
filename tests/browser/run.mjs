@@ -29,7 +29,7 @@ try {
     await env.rest('POST', '/items/pages', {
       title: 'Home', slug: 'home', status: 'published', category: cat.id,
       blocks: [
-        { collection: 'block_hero', item: { headline: 'Benvenuti' }, sort: 1 },
+        { collection: 'block_hero', item: { headline: 'Welcome' }, sort: 1 },
         { collection: 'block_cards', item: { title: 'Cards', cards: [{ title: 'Uno', sort: 1 }, { title: 'Due', sort: 2 }] }, sort: 2 },
       ],
     })
