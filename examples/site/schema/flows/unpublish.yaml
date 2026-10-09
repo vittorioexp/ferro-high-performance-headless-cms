@@ -1,0 +1,14 @@
+id: 0199a000-0000-7000-8000-0000000c0005
+name: Unpublish page
+description: Manual action shown as a button on the page editor.
+trigger:
+  type: manual
+  collections: [pages]
+operations:
+  - key: unpublish
+    type: item_update
+    options:
+      collection: pages
+      ids: "{{ $trigger.key }}"
+      payload:
+        status: draft

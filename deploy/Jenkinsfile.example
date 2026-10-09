@@ -1,0 +1,53 @@
+// Example pipeline: schema promotion from git and content promotion between environments.
+// Replaces the per-collection Jenkinsfiles of diff-data / migrate-data.
+pipeline {
+  agent any
+  parameters {
+    choice(name: 'ACTION', choices: ['schema-diff', 'schema-apply', 'data-diff', 'data-push'], description: 'Operation')
+    choice(name: 'SOURCE', choices: ['dev', 'test'], description: 'Source environment (data)')
+    choice(name: 'TARGET', choices: ['test', 'prod'], description: 'Target environment')
+    string(name: 'SELECT', defaultValue: 'pages:{"slug":{"_eq":"home"}}', description: 'Selection (data): collection[:id=...|:{filter}]')
+    choice(name: 'STRATEGY', choices: ['safe', 'overwrite', 'insert-only'], description: 'Conflict strategy (data)')
+    booleanParam(name: 'PRUNE', defaultValue: true, description: 'Remove children deleted in the source')
+  }
+  environment {
+    FERRO_DEV_TOKEN  = credentials('ferro-dev-token')
+    FERRO_TEST_TOKEN = credentials('ferro-test-token')
+    FERRO_PROD_TOKEN = credentials('ferro-prod-token')
+  }
+  stages {
+    stage('Validate schema') {
+      steps { sh 'ferro schema validate' }
+    }
+    stage('Schema diff') {
+      when { expression { params.ACTION.startsWith('schema') } }
+      steps { sh "ferro schema diff --to ${params.TARGET} --report reports/schema-${params.TARGET}.html" }
+    }
+    stage('Schema apply') {
+      when { expression { params.ACTION == 'schema-apply' } }
+      steps {
+        input message: "Apply schema to ${params.TARGET}?"
+        sh "ferro schema apply --to ${params.TARGET} --yes --report reports/schema-apply-${params.TARGET}.html"
+      }
+    }
+    stage('Data diff') {
+      when { expression { params.ACTION.startsWith('data') } }
+      steps {
+        sh "ferro data diff --from ${params.SOURCE} --to ${params.TARGET} --select '${params.SELECT}' --report reports/data-diff.html"
+      }
+    }
+    stage('Data push') {
+      when { expression { params.ACTION == 'data-push' } }
+      steps {
+        input message: "Promote content ${params.SOURCE} -> ${params.TARGET}?"
+        sh "ferro data push --from ${params.SOURCE} --to ${params.TARGET} --select '${params.SELECT}' --strategy ${params.STRATEGY} ${params.PRUNE ? '--prune' : ''} --yes --report reports/data-push.html"
+      }
+    }
+  }
+  post {
+    always { archiveArtifacts artifacts: 'reports/*.html', allowEmptyArchive: true }
+  }
+}
+
+// Nightly drift detection: fails when prod was changed outside git.
+//   ferro schema diff --to prod --exit-code --report reports/drift.html

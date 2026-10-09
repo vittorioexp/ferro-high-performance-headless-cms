@@ -1,0 +1,24 @@
+[package]
+name = "ferro-server"
+description = "Ferro CMS: HTTP API (REST)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-core.workspace = true
+ferro-engine.workspace = true
+ferro-storage.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+uuid.workspace = true

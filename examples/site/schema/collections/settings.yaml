@@ -1,0 +1,7 @@
+name: settings
+meta: { singleton: true, icon: settings }
+sync:
+  exclude: true
+fields:
+  - { name: site_name, type: string }
+  - { name: analytics_id, type: string }

@@ -1,0 +1,15 @@
+[project]
+schema = "schema"
+
+[environments.local]
+url = "http://localhost:8055"
+token_env = "FERRO_LOCAL_TOKEN"
+
+[environments.dev]
+url = "https://cms-dev.example.com"
+token_env = "FERRO_DEV_TOKEN"
+
+[environments.prod]
+url = "https://cms.example.com"
+token_env = "FERRO_PROD_TOKEN"
+protected = true

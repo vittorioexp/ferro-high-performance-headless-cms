@@ -1,0 +1,16 @@
+id: 0199a000-0000-7000-8000-00000000f002
+name: Public
+public: true
+permissions:
+  - collection: pages
+    action: read
+    filter: { status: { _eq: published } }
+  - { collection: pages_blocks, action: read }
+  - { collection: pages_translations, action: read }
+  - { collection: languages, action: read }
+  - { collection: categories, action: read }
+  - { collection: block_hero, action: read }
+  - { collection: block_text, action: read }
+  - { collection: block_cards, action: read }
+  - { collection: block_cards_items, action: read }
+  - { collection: ferro_files, action: read }

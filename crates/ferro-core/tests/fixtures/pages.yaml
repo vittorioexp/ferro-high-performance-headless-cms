@@ -1,0 +1,58 @@
+version: 1
+collections:
+  - name: categories
+    sync: { natural_key: [code] }
+    fields:
+      - { name: code, type: string, required: true, unique: true }
+      - { name: label, type: string }
+
+  - name: pages
+    sync: { natural_key: [slug] }
+    meta: { icon: article, display_template: "{{title}}" }
+    fields:
+      - { name: title, type: string, required: true }
+      - { name: slug, type: string, required: true, unique: true }
+      - { name: status, type: string, default: draft, indexed: true }
+      - { name: cover, type: file }
+      - name: category
+        type: m2o
+        relation: { related: categories }
+      - name: blocks
+        type: m2a
+        relation: { related: pages_blocks, foreign_field: pages_id, sort_field: sort }
+
+  - name: pages_blocks
+    meta: { hidden: true }
+    system_fields: false
+    fields:
+      - name: pages_id
+        type: m2o
+        relation: { related: pages, on_delete: cascade }
+      - { name: collection, type: string, required: true }
+      - name: item
+        type: m2a_item
+        relation: { collection_field: collection, allowed: [block_hero, block_text] }
+      - { name: sort, type: integer }
+
+  - name: block_hero
+    fields:
+      - { name: headline, type: string }
+      - { name: image, type: file }
+
+  - name: block_text
+    fields:
+      - { name: body, type: text }
+
+roles:
+  - id: 0199a000-0000-7000-8000-00000000e001
+    name: Editor
+    policies: [0199a000-0000-7000-8000-00000000f001]
+
+policies:
+  - id: 0199a000-0000-7000-8000-00000000f001
+    name: Editor
+    app_access: true
+    permissions:
+      - { collection: pages, action: read }
+      - { collection: pages, action: update, filter: { user_created: { _eq: $CURRENT_USER } } }
+      - { collection: ferro_files, action: read }

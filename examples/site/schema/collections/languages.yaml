@@ -1,0 +1,7 @@
+name: languages
+system_fields: false
+sync:
+  natural_key: [code]
+fields:
+  - { name: code, type: string, max_length: 16, required: true, unique: true }
+  - { name: name, type: string }

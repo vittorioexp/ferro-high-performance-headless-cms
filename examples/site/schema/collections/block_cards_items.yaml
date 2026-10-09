@@ -1,0 +1,14 @@
+name: block_cards_items
+meta: { hidden: true }
+fields:
+  - name: block_cards_id
+    type: m2o
+    required: true
+    relation: { related: block_cards, on_delete: cascade }
+  - { name: title, type: string }
+  - { name: text, type: text }
+  - { name: image, type: file }
+  - name: link
+    type: m2o
+    relation: { related: pages, sync: reference }
+  - { name: sort, type: integer }

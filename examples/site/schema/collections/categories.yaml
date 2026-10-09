@@ -1,0 +1,6 @@
+name: categories
+sync:
+  natural_key: [code]
+fields:
+  - { name: code, type: string, required: true, unique: true }
+  - { name: label, type: string }

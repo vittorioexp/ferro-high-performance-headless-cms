@@ -1,0 +1,15 @@
+[project]
+schema = "../../examples/site/schema"
+
+[environments.a]
+url = "http://127.0.0.1:18055"
+token_env = "FERRO_A_TOKEN"
+
+[environments.c]
+url = "http://127.0.0.1:18057"
+token_env = "FERRO_C_TOKEN"
+
+[environments.b]
+url = "http://127.0.0.1:18056"
+token_env = "FERRO_B_TOKEN"
+protected = true

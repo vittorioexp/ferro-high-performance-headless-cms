@@ -1,0 +1,24 @@
+id: 0199a000-0000-7000-8000-0000000c0001
+name: Notify on publish
+description: Calls an external system when a page is saved as published. The token comes from FERRO_FLOW_ENV_PUBLISH_HOOK_TOKEN.
+trigger:
+  type: event
+  events: [pages.items.update]
+operations:
+  - key: only_published
+    type: condition
+    options:
+      rule:
+        $trigger: { payload: { status: { _eq: published } } }
+    resolve: notify
+  - key: notify
+    type: request
+    options:
+      method: POST
+      url: https://hooks.example.com/publish
+      headers:
+        Authorization: "Bearer {{ $env.PUBLISH_HOOK_TOKEN }}"
+      body:
+        id: "{{ $trigger.key }}"
+        title: "{{ $trigger.item.title }}"
+        slug: "{{ $trigger.item.slug }}"

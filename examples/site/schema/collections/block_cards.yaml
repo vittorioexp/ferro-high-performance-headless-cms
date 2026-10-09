@@ -1,0 +1,7 @@
+name: block_cards
+meta: { group: blocks, icon: view_module }
+fields:
+  - { name: title, type: string }
+  - name: cards
+    type: o2m
+    relation: { related: block_cards_items, foreign_field: block_cards_id, sort_field: sort }

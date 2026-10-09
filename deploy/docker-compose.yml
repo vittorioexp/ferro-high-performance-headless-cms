@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ferro
+      POSTGRES_PASSWORD: ferro
+      POSTGRES_DB: ferro
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ferro"]
+      interval: 5s
+      retries: 10
+
+  ferro:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FERRO_DATABASE_URL: postgres://ferro:ferro@postgres:5432/ferro
+      FERRO_SECRET: ${FERRO_SECRET:?set FERRO_SECRET (32+ chars)}
+      FERRO_ENV: ${FERRO_ENV:-local}
+      FERRO_STORAGE_LOCAL_ROOT: /data/uploads
+      FERRO_ADMIN_EMAIL: ${FERRO_ADMIN_EMAIL:-admin@example.com}
+      FERRO_ADMIN_PASSWORD: ${FERRO_ADMIN_PASSWORD:?set FERRO_ADMIN_PASSWORD}
+    ports:
+      - "8055:8055"
+    volumes:
+      - uploads:/data/uploads
+
+volumes:
+  pgdata:
+  uploads:

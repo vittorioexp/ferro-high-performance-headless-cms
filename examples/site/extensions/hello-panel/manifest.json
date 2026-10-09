@@ -1,0 +1,6 @@
+{
+  "name": "Hello panel",
+  "version": "1.0.0",
+  "description": "Example extension: an overview page, a star-rating field interface and an item action.",
+  "entry": "index.js"
+}

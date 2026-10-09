@@ -1,0 +1,15 @@
+id: 0199a000-0000-7000-8000-00000000f001
+name: Editor
+app_access: true
+permissions:
+  - { collection: "*", action: read }
+  - { collection: pages, action: create, presets: { status: draft } }
+  - { collection: pages, action: update, filter: { status: { _neq: archived } } }
+  - { collection: pages_blocks, action: create }
+  - { collection: pages_blocks, action: update }
+  - { collection: pages_blocks, action: delete }
+  - { collection: block_hero, action: create }
+  - { collection: block_hero, action: update }
+  - { collection: block_text, action: create }
+  - { collection: block_text, action: update }
+  - { collection: ferro_files, action: create }

@@ -1,0 +1,5 @@
+name: block_text
+meta: { group: blocks, icon: notes }
+fields:
+  - { name: body, type: text, meta: { interface: wysiwyg } }
+  - { name: style, type: string, default: default }

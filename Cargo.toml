@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ferro-core",
+    "crates/ferro-engine",
+    "crates/ferro-storage",
+    "crates/ferro-server",
+    "crates/ferro-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+
+[workspace.dependencies]
+ferro-core = { path = "crates/ferro-core" }
+ferro-engine = { path = "crates/ferro-engine" }
+ferro-server = { path = "crates/ferro-server" }
+ferro-storage = { path = "crates/ferro-storage" }
+
+anyhow = "1"
+async-trait = "0.1"
+argon2 = { version = "0.5", features = ["std"] }
+axum = { version = "0.7", features = ["multipart", "macros", "ws"] }
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+hex = "0.4"
+jsonwebtoken = "9"
+mime_guess = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "json", "uuid", "chrono"] }
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }

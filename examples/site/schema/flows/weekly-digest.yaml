@@ -1,0 +1,19 @@
+id: 0199a000-0000-7000-8000-0000000c0003
+name: Weekly digest
+description: Every Monday at 07:00 UTC lists the published pages.
+trigger:
+  type: schedule
+  cron: "0 7 * * 1"
+operations:
+  - key: digest
+    type: item_read
+    options:
+      collection: pages
+      filter: { status: { _eq: published } }
+      sort: -date_updated
+      limit: 50
+    resolve: announce
+  - key: announce
+    type: log
+    options:
+      message: "Published pages: {{ digest }}"

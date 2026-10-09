@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ferro
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ferro" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      E2E_PG: postgres://ferro@localhost:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: S3-compatible object store (SeaweedFS) for the storage suite
+        run: |
+          cat > /tmp/s3.json <<'EOF'
+          {"identities":[{"name":"ferro","credentials":[{"accessKey":"ferrokey","secretKey":"ferrosecret123"}],"actions":["Admin","Read","Write","List","Tagging"]}]}
+          EOF
+          docker run -d --name s3 --network host -v /tmp/s3.json:/s3.json chrislusf/seaweedfs server -dir=/data -s3 -s3.port=19000 -s3.config=/s3.json -ip=127.0.0.1 -master.volumeSizeLimitMB=64 -volume.max=20
+          for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:19000/ && break; sleep 1; done
+          curl -sf -X POST http://127.0.0.1:8888/buckets/ferro-test/
+      - name: Build, unit tests, integration suite
+        env:
+          E2E_S3_ENDPOINT: http://127.0.0.1:19000
+          E2E_S3_FILER: http://127.0.0.1:8888
+        run: scripts/ci.sh
+      - name: Browser suite
+        run: |
+          cd tests/browser
+          npm install --no-audit --no-fund
+          npx playwright-core install --with-deps chromium
+          node run.mjs
+      - name: Server logs of the failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: target/e2e/*.log

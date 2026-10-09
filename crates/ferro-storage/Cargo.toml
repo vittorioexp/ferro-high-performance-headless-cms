@@ -1,0 +1,16 @@
+[package]
+name = "ferro-storage"
+description = "Ferro CMS: object-store drivers (S3 and compatibles, Azure Blob) and storage configuration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-engine.workspace = true
+async-trait.workspace = true
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
+bytes.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tracing.workspace = true

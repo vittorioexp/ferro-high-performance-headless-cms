@@ -1,0 +1,13 @@
+name: pages_blocks
+meta: { hidden: true }
+system_fields: false
+fields:
+  - name: pages_id
+    type: m2o
+    required: true
+    relation: { related: pages, on_delete: cascade }
+  - { name: collection, type: string, required: true }
+  - name: item
+    type: m2a_item
+    relation: { collection_field: collection, allowed: [block_hero, block_text, block_cards] }
+  - { name: sort, type: integer }

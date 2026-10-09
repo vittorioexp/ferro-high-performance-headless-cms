@@ -1,0 +1,21 @@
+id: 0199a000-0000-7000-8000-0000000c0002
+name: Reject empty titles
+description: Blocking hook. Runs inside the write and refuses it when a title is sent but empty.
+trigger:
+  type: event
+  events: [pages.items.create, pages.items.update]
+  blocking: true
+operations:
+  - key: check
+    type: condition
+    # passes when `title` is not part of the payload (partial updates) or is not empty
+    options:
+      rule:
+        _or:
+          - $trigger: { payload: { title: { _null: true } } }
+          - $trigger: { payload: { title: { _nempty: true } } }
+    reject: deny
+  - key: deny
+    type: fail
+    options:
+      message: The title cannot be empty

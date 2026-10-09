@@ -1,0 +1,28 @@
+name: pages
+meta:
+  icon: article
+  display_template: "{{title}}"
+  translations: { it-IT: Pagine, en-US: Pages }
+sync:
+  natural_key: [slug]
+fields:
+  - { name: title, type: string, required: true }
+  - name: slug
+    type: string
+    required: true
+    unique: true
+    validation: { _nempty: true }
+  - { name: status, type: string, default: draft, indexed: true, meta: { interface: select-dropdown, options: { choices: [draft, published, archived] } } }
+  - { name: seo, type: json }
+  - { name: cover, type: file, meta: { interface: file-image } }
+  - name: category
+    type: m2o
+    relation: { related: categories }
+  - name: blocks
+    type: m2a
+    relation: { related: pages_blocks, foreign_field: pages_id, sort_field: sort }
+    meta: { interface: list-m2a }
+  - name: translations
+    type: o2m
+    relation: { related: pages_translations, foreign_field: pages_id }
+    meta: { interface: translations }

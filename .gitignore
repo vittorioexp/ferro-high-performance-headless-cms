@@ -1,0 +1,9 @@
+/target
+.env
+uploads/
+*.html
+!docs/**/*.html
+!admin/index.html
+bundle*/
+
+tests/browser/node_modules

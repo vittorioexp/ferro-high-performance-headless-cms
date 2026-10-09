@@ -1,0 +1,16 @@
+id: 0199a000-0000-7000-8000-0000000c0004
+name: Hello endpoint
+description: Custom endpoint, GET /x/hello?name=World. The response is the flow output.
+trigger:
+  type: webhook
+  slug: hello
+  methods: [GET]
+  access: public
+operations:
+  - key: greet
+    type: transform
+    options:
+      value:
+        message: "Hello {{ $trigger.query.name }}"
+output:
+  data: "{{ greet }}"

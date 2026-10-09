@@ -1,0 +1,13 @@
+name: pages_translations
+meta: { hidden: true }
+fields:
+  - name: pages_id
+    type: m2o
+    required: true
+    relation: { related: pages, on_delete: cascade }
+  - name: languages_code
+    type: m2o
+    required: true
+    relation: { related: languages, on_delete: restrict }
+  - { name: title, type: string }
+  - { name: summary, type: text }

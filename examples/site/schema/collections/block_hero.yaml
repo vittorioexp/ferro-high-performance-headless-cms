@@ -1,0 +1,8 @@
+name: block_hero
+meta: { group: blocks, icon: panorama }
+fields:
+  - { name: headline, type: string }
+  - { name: subtitle, type: text }
+  - { name: image, type: file }
+  - { name: cta_label, type: string }
+  - { name: cta_url, type: string }
