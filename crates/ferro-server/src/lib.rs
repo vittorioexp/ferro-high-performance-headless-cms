@@ -24,6 +24,16 @@ use tower_http::trace::TraceLayer;
 
 pub use error::{ApiError, ApiResult};
 
+/// `base` + `key=value` as a query parameter (inside the fragment for `#/route` style addresses). `value` must be
+/// URL-safe already (tokens and error codes are).
+pub fn with_param(base: &str, key: &str, value: &str) -> String {
+    format!("{base}{}{key}={value}", if base.contains('?') { '&' } else { '?' })
+}
+
+pub fn with_token(base: &str, token: &str) -> String {
+    with_param(base, "token", token)
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
@@ -52,6 +62,12 @@ pub struct Config {
     pub admin_dir: Option<PathBuf>,
     pub cors_origins: Vec<String>,
     pub db_max_connections: u32,
+    /// Key for secrets stored in the database (two-factor seeds); defaults to `secret`.
+    pub encryption_key: Option<String>,
+    /// Name shown in authenticator apps.
+    pub tfa_issuer: String,
+    /// Public address, outgoing email and (later) single sign-on / directory login.
+    pub identity: ferro_identity::IdentityConfig,
     /// Image transformations (`/assets/:id?width=...`).
     pub image_limits: ferro_engine::images::Limits,
     /// Transformations running at the same time (each decodes a whole image in memory).
@@ -109,6 +125,12 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .collect(),
             db_max_connections: env_num("FERRO_DB_MAX_CONNECTIONS", 10)?,
+            encryption_key: env_opt("FERRO_ENCRYPTION_KEY"),
+            identity: ferro_identity::IdentityConfig::from_env().map_err(anyhow::Error::msg)?,
+            tfa_issuer: env_opt("FERRO_TFA_ISSUER").unwrap_or_else(|| match env_or("FERRO_ENV", "local").as_str() {
+                "local" | "prod" | "production" => "Ferro".to_string(),
+                other => format!("Ferro ({other})"),
+            }),
             image_limits: ferro_engine::images::Limits {
                 max_dimension: env_num("FERRO_IMAGE_MAX_DIMENSION", 4096)?,
                 max_input_pixels: env_num::<u64>("FERRO_IMAGE_MAX_INPUT_MEGAPIXELS", 64)? * 1_000_000,
@@ -131,6 +153,12 @@ pub struct Inner {
     pub auth: AuthConfig,
     pub storages: Storages,
     pub image_gate: tokio::sync::Semaphore,
+    pub mailer: ferro_identity::Mailer,
+    pub oauth: ferro_identity::OAuth,
+    /// Directory (LDAP) login, when configured.
+    pub directory: Option<ferro_identity::ldap::Directory>,
+    /// Throttles `POST /auth/password/request`: it can make Ferro send mail to anybody.
+    pub reset_guard: login_guard::LoginGuard,
     pub image_cache: ferro_engine::images::TransformCache,
 }
 
@@ -145,6 +173,26 @@ impl std::ops::Deref for AppState {
 }
 
 impl AppState {
+    /// Can Ferro put a working link in front of a user (outgoing email + a public address to point it at)?
+    pub fn can_send_links(&self) -> bool {
+        self.mailer.enabled() && self.config.identity.public_url.is_some()
+    }
+
+    /// Base address of a link sent to a user. A caller-supplied one must be an allowed origin; otherwise the link
+    /// is built from `FERRO_PUBLIC_URL` (never from the request's Host header: that would allow poisoned links).
+    pub fn link_base(&self, explicit: Option<&str>, default_path: &str) -> ApiResult<String> {
+        if let Some(u) = explicit.filter(|u| !u.is_empty()) {
+            if !self.config.identity.redirect_allowed(u) {
+                return Err(ApiError::bad_request("that address is not allowed (see FERRO_PUBLIC_URL and FERRO_AUTH_REDIRECT_ALLOWLIST)"));
+            }
+            return Ok(u.to_string());
+        }
+        match &self.config.identity.public_url {
+            Some(p) => Ok(format!("{}{}", p.as_str().trim_end_matches('/'), default_path)),
+            None => Err(ApiError::bad_request("FERRO_PUBLIC_URL is not set on this server: pass an explicit address or configure it")),
+        }
+    }
+
     pub async fn reload_schema(&self) -> ferro_engine::Result<Arc<Schema>> {
         let schema = schema_store::load_schema(&self.pool).await?;
         self.schema.set(schema);
@@ -202,6 +250,7 @@ async fn shutdown_signal() {
 }
 
 pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
+    ferro_identity::install_crypto_provider();
     let pool = db::connect(&config.database_url, config.db_max_connections).await.context("database connection")?;
     db::migrate_system(&pool).await.context("system migrations")?;
     schema_store::bootstrap(&pool, config.admin_email.as_deref(), config.admin_password.as_deref())
@@ -209,11 +258,19 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         .context("bootstrap")?;
     let schema = schema_store::load_schema(&pool).await?;
     let storages = ferro_storage::build(&config.storage).await.context("storage")?;
+    let mailer = match &config.identity.smtp {
+        Some(smtp) => ferro_identity::Mailer::new(smtp).context("outgoing email")?,
+        None => ferro_identity::Mailer::disabled(),
+    };
+    let oauth = ferro_identity::OAuth::new(&config.identity, &config.secret).context("single sign-on")?;
+    let directory = config.identity.ldap.clone().map(ferro_identity::ldap::Directory::new);
     let (config_image_concurrency, config_image_cache_bytes) = (config.image_concurrency, config.image_cache_bytes);
     let auth = AuthConfig {
         secret: config.secret.clone(),
         access_ttl_secs: config.access_ttl_secs,
         refresh_ttl_secs: config.refresh_ttl_secs,
+        encryption_key: config.encryption_key.clone().unwrap_or_else(|| config.secret.clone()),
+        issuer: config.tfa_issuer.clone(),
     };
     Ok(AppState(Arc::new(Inner {
         pool,
@@ -225,6 +282,10 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         auth,
         storages,
         image_gate: tokio::sync::Semaphore::new(config_image_concurrency.max(1)),
+        mailer,
+        oauth,
+        directory,
+        reset_guard: login_guard::LoginGuard::new(5, Duration::from_secs(3600)),
         image_cache: ferro_engine::images::TransformCache::new(config_image_cache_bytes),
     })))
 }

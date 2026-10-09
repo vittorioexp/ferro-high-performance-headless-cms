@@ -47,9 +47,8 @@ function setTokens(tokens) {
   }
 }
 
-async function parse(res) {
+function parseText(res, text) {
   if (res.status === 204) return null;
-  const text = await res.text();
   let json = null;
   try {
     json = text ? JSON.parse(text) : null;
@@ -61,6 +60,11 @@ async function parse(res) {
     throw new ApiError(e?.message || `HTTP ${res.status}`, res.status, e?.extensions?.code);
   }
   return json;
+}
+
+async function parse(res) {
+  if (res.status === 204) return null;
+  return parseText(res, await res.text());
 }
 
 export async function refreshSession() {
@@ -97,9 +101,23 @@ async function request(method, path, { query, body, form } = {}, retry = true) {
     payload = JSON.stringify(body);
   }
   const res = await fetch(`${state.base}${path}${qs(query)}`, { method, headers, body: payload });
-  if (res.status === 401 && retry && !path.startsWith('/auth/') && state.refresh) {
-    if (await refreshSession()) return request(method, path, { query, body, form }, false);
-    if (state.onAuthLost) state.onAuthLost();
+  if (res.status === 401 && retry && state.refresh) {
+    if (!path.startsWith('/auth/')) {
+      if (await refreshSession()) return request(method, path, { query, body, form }, false);
+      if (state.onAuthLost) state.onAuthLost();
+    } else if (path.startsWith('/auth/tfa/')) {
+      // two-factor setup is authenticated too, but a wrong one-time code is also a 401: only an expired token is retried
+      // (retrying a wrong code would count it as a second failed attempt)
+      const text = await res.text();
+      let code;
+      try {
+        code = JSON.parse(text)?.errors?.[0]?.extensions?.code;
+      } catch {
+        /* not JSON */
+      }
+      if (code === 'UNAUTHORIZED' && (await refreshSession())) return request(method, path, { query, body, form }, false);
+      return parseText(res, text);
+    }
   }
   return parse(res);
 }
@@ -113,14 +131,51 @@ export const api = {
   upload: (path, form, query) => request('POST', path, { form, query }),
 };
 
-export async function login(email, password) {
+/**
+ * Sign in. When the account has two-factor authentication the server answers 401 with code `OTP_REQUIRED`: call again
+ * with the one-time code (or a recovery code) as `otp`. A wrong code is `INVALID_OTP`.
+ */
+export async function login(email, password, otp) {
   const res = await fetch(`${state.base}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, ...(otp ? { otp } : {}) }),
   });
   const json = await parse(res);
   setTokens(json.data);
+}
+
+async function authPost(path, body) {
+  const res = await fetch(`${state.base}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return parse(res);
+}
+
+/** What the sign-in page can offer: `{ password_reset, invitations, providers: [{name, label, icon}], directory }`. */
+export async function authMethods() {
+  try {
+    const res = await fetch(`${state.base}/auth/methods`);
+    return (await parse(res)).data;
+  } catch {
+    return { password_reset: false, invitations: false, providers: [], directory: false };
+  }
+}
+
+export const requestPasswordReset = (email) => authPost('/auth/password/request', { email });
+export const resetPassword = (token, password) => authPost('/auth/password/reset', { token, password });
+
+export async function acceptInvitation(token, password) {
+  setTokens((await authPost('/auth/invite/accept', { token, password })).data);
+}
+
+/** Trade the one-time code from a single sign-on redirect for a session. */
+export async function exchangeSsoCode(code) {
+  setTokens((await authPost('/auth/oauth/exchange', { code })).data);
+}
+
+/** Where to send the browser to sign in with a provider; it returns to this page (`#/sso`). */
+export function ssoUrl(name) {
+  const back = `${location.origin}${location.pathname}#/sso`;
+  return `${state.base}/auth/oauth/${encodeURIComponent(name)}?redirect=${encodeURIComponent(back)}`;
 }
 
 /** Try to resume a session from the stored refresh token. */

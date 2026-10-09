@@ -16,6 +16,7 @@ pub mod realtime;
 pub mod schema;
 pub mod schema_store;
 pub mod sync;
+pub mod tfa;
 
 pub use error::{FerroError, Result};
 pub use permissions::Accountability;

@@ -103,6 +103,7 @@ in its design rather than with external scripts:
 | `ferro-core` | Model types (snapshot), validation, **diff/plan**, in-memory filter evaluator, `fields` parsing, topological sorting, bundle and import-report formats, reading and writing the project's YAML, HTML reports. No database dependency: it can be tested in isolation. |
 | `ferro-engine` | PostgreSQL and storage: system migrations, DDL from plans, compilation of filters into parameterised SQL, the items service, permissions, authentication, files, sync. |
 | `ferro-storage` | Storage drivers: `local`, **S3 and compatibles** (AWS SDK, standard credential chain, signed URLs), **Azure Blob** (REST + SAS); configuration from `FERRO_STORAGE_*`. Keeps the heavy dependencies out of the engine. |
+| `ferro-identity` | Single sign-on (OpenID Connect, OAuth 2.0), LDAP login and outgoing email (SMTP); configuration from `FERRO_AUTH_*`, `FERRO_LDAP_*`, `FERRO_SMTP_*`. Keeps the LDAP, mail and TLS dependencies out of the engine. |
 | `ferro-server` | HTTP API (axum 0.7), identity extraction, error mapping, CORS, limits, `LISTEN/NOTIFY` listener that reloads the schema. |
 | `ferro-cli` | The `ferro` binary: `serve` plus environment-management commands (schema/data) over HTTP, and `storage list/check/migrate` (which work directly on the database and storage). |
 
@@ -252,7 +253,8 @@ startup under an advisory lock (safe with several instances).
 |---|---|
 | `ferro_collections`, `ferro_roles`, `ferro_policies` | The current snapshot (JSONB definitions) |
 | `ferro_schema_history` | Every plan applied: from/to hash, plan, resulting snapshot, author, date |
-| `ferro_users`, `ferro_sessions` | Users (argon2id), refresh tokens (hash only), static tokens (hash only) |
+| `ferro_users`, `ferro_sessions` | Users (argon2id) with their sign-in provider and identifier, encrypted two-factor secret and hashed recovery codes; refresh tokens (hash only), static tokens (hash only) |
+| `ferro_auth_tokens` | Single-use tokens (hash only): password reset, invitation, single sign-on hand-over; with their purpose and expiry |
 | `ferro_files`, `ferro_folders` | File metadata, nested folders |
 | `ferro_activity`, `ferro_revisions` | Audit of every write; revisions with `data` (the item afterwards) and `delta` (the payload) |
 | `ferro_flows` · `ferro_flow_queue` · `ferro_flow_runs` | Flow definitions (part of the snapshot), job queue, execution history |
@@ -464,7 +466,8 @@ Everything runs in one transaction, with permissions checked at every level.
 
 | Area | Endpoints |
 |---|---|
-| Auth | `POST /auth/login` `{email,password}` → `{access_token, refresh_token, expires}`, `POST /auth/refresh`, `POST /auth/logout` |
+| Auth | `POST /auth/login` `{email,password,otp?}` → `{access_token, refresh_token, expires}` (`OTP_REQUIRED` / `INVALID_OTP` with two-factor), `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/methods` (what the sign-in page may offer) |
+| Account security | `POST /auth/password/request`, `POST /auth/password/reset`, `POST /auth/invite/accept`, `POST /users/invite`, `POST /auth/tfa/generate` · `enable` · `disable`, `DELETE /users/:id/tfa`; single sign-on: `GET /auth/oauth/:name`, `GET /auth/oauth/:name/callback`, `POST /auth/oauth/exchange` (see §9) |
 | Model | `GET/POST /collections`, `GET/PATCH/DELETE /collections/:name`, `POST /fields/:collection`, `PATCH/DELETE /fields/:collection/:field` (query `allow_destructive`, `dry_run`) |
 | Access | `GET /roles`, `PUT/DELETE /roles/:id`, `GET /policies`, `PUT/DELETE /policies/:id` |
 | Schema | `GET /schema/snapshot` (`?format=yaml`), `POST /schema/plan`, `POST /schema/apply`, `GET /schema/history` |
@@ -685,6 +688,130 @@ typing; the user's own save does not produce the notice. Extensions use
 - `admin_access` bypasses everything and is required for schema, sync and users.
 - The **Administrator** role and policy have fixed ids, identical in every environment.
 
+### Ways to sign in
+
+| Method | For | Configured with |
+|---|---|---|
+| Email + Ferro password | Everybody by default; API tokens for machines | — |
+| **OpenID Connect / OAuth 2.0 single sign-on** | Microsoft Entra ID, Google, Okta, Keycloak, Auth0, GitHub… | `FERRO_AUTH_PROVIDERS`, `FERRO_AUTH_<NAME>_*` |
+| **LDAP / Active Directory** | Directory accounts typed into the normal form | `FERRO_LDAP_*` |
+| **Two-factor authentication** (TOTP) | Any account that signs in with a password or the directory | Per user, in *My account* |
+| **Password reset by email** and **invitations** | Local accounts | `FERRO_SMTP_*`, `FERRO_PUBLIC_URL` |
+
+#### Two-factor authentication (TOTP)
+
+- RFC 6238: SHA-1, 6 digits, 30-second steps, one step of tolerance either way (clocks drift). Works with any authenticator
+  app (Microsoft/Google Authenticator, 1Password, Authy…).
+- **Enrolment** (`POST /auth/tfa/generate` → `POST /auth/tfa/enable`): the user confirms their current password (users
+  without one — SSO, directory — need only their session), gets a secret, an `otpauth://` address and a QR code (rendered
+  by the server as SVG and shown as an image, never injected as markup), and proves the app works by typing a code. Ten
+  single-use **recovery codes** are returned once; only their hashes are stored.
+- **Sign-in**: after the right password, `POST /auth/login` without `otp` answers `401 OTP_REQUIRED`; the client asks for
+  the code and repeats the call with `otp` (a six-digit code or a recovery code). A wrong code is `INVALID_OTP`. The
+  response never reveals that two-factor exists to someone who got the password wrong.
+- **Replay protection**: the time step of the last accepted code is stored atomically; the same code (or an older one) is
+  refused, so a code seen over a shoulder works for nobody. A recovery code is spent by removing its hash in one
+  statement — three simultaneous uses spend it once.
+- **Brute force**: wrong codes count towards the same lockout as wrong passwords (`FERRO_LOGIN_MAX_FAILURES`); enrolment
+  and disabling are throttled too.
+- **At rest**: the secret is encrypted with AES-256-GCM using a key derived from `FERRO_ENCRYPTION_KEY` (default:
+  `FERRO_SECRET`). **Changing that key makes every stored secret unreadable**: set a dedicated `FERRO_ENCRYPTION_KEY` before
+  anybody enrols if you expect to rotate `FERRO_SECRET`. The API never returns the secret or the codes (they are not part
+  of the exposed `ferro_users` fields, so they cannot even be selected or filtered on); `tfa_enabled` and `provider` are.
+- **Turning it off** needs the password (if any) and a code. An administrator can remove a user's second factor
+  (`DELETE /users/:id/tfa`, Users page); with no other administrator available use `ferro user reset-tfa --email …`.
+- **Scope**: applies to password logins and directory logins. Single sign-on skips it — the identity provider is the place
+  for multi-factor policy. Enforcing it for everybody (or per role) is not implemented yet.
+
+#### Password reset and invitations
+
+Both rely on **single-use tokens**: 256 random bits, stored only as a SHA-256 hash, deleted as they are read (so concurrent
+uses succeed once), bound to their purpose (a reset token is useless as an invitation and the other way round) and
+expiring (reset 1 hour, invitation 7 days).
+
+- `POST /auth/password/request {email, reset_url?}` always answers `202` with the same body whether or not the address has
+  an account, and does the work in the background, so neither the answer nor its timing tells. Only active accounts with a
+  Ferro password get a link (not suspended, not SSO/directory accounts). A newer request invalidates the previous link.
+  Every request counts towards a throttle (5 per hour per address, 50 per client address): the endpoint can make Ferro mail
+  anybody.
+- `POST /auth/password/reset {token, password}` sets the password and **ends every session** of that user.
+- `POST /users/invite {email, role?, invite_url?}` (administrators) creates the user as `invited` and mails a link;
+  `POST /auth/invite/accept {token, password}` activates the account and signs the user in. Inviting a pending address again
+  renews it; active or suspended accounts are a conflict. If sending fails (or SMTP is not configured but
+  `FERRO_PUBLIC_URL` is) the link is returned to the administrator instead (`delivery: "link"`).
+- **Links point at `FERRO_PUBLIC_URL`, never at the request's `Host` header** (otherwise an attacker could have a reset
+  link mailed that points to their own site). A caller may pass `reset_url` / `invite_url` for another front end, but only
+  for an origin that is the public URL or listed in `FERRO_AUTH_REDIRECT_ALLOWLIST`, compared as parsed origins
+  (`https://cms.example.com.evil.net` and `https://cms.example.com@evil.net` are rejected).
+- The default links open the admin app (`/admin/#/reset?token=…`, `#/invite?token=…`); the token sits in the URL
+  *fragment* (never sent to a server or logged by a proxy), the page has `Referrer-Policy: no-referrer` semantics, and the
+  app removes the token from the address bar and the history as soon as it has read it.
+- Passwords must be 8–1024 characters everywhere (CLI, API, reset, invitation): the upper bound keeps hashing cost sane.
+
+#### Single sign-on (OpenID Connect and OAuth 2.0)
+
+Configured by environment variables per provider (see the table in §13): with an OpenID provider only the issuer address
+is needed (endpoints come from discovery); a plain OAuth 2.0 provider lists its endpoints explicitly. The sign-in page
+shows one button per provider.
+
+1. `GET /auth/oauth/<name>` sends the browser to the provider with `state`, `nonce` and a **PKCE** (S256) challenge, and
+   sets a short-lived, signed, `HttpOnly`, `SameSite=Lax` cookie holding the state, the nonce, the PKCE verifier and the
+   page to return to. The verifier never travels in a URL.
+2. The provider redirects to `/auth/oauth/<name>/callback`. Ferro checks the cookie and the `state` (CSRF), exchanges the
+   code (client secret, PKCE verifier, exact `redirect_uri`) and — for OpenID — **verifies the ID token**: signature against
+   the provider's published keys (cached; refetched when an unknown key id appears, e.g. after a rotation), issuer, audience
+   (and `azp`), expiry, subject and nonce. Only asymmetric algorithms are accepted: `none` and HMAC tokens (the classic
+   key-confusion attack) are refused. If the token has no email, the userinfo endpoint is consulted and must name the same
+   subject. The discovery document must name the configured issuer.
+3. Ferro finds or creates the user (rules below) and redirects the browser to the admin app with a **one-time code**
+   (`#/sso?code=…`, valid 60 seconds, hashed in the database, single use). The app trades it for tokens with
+   `POST /auth/oauth/exchange`: **tokens never appear in a URL**. A failure redirects with `?error=` and a short code
+   (`denied`, `domain`, `email`, `state`, `token`, `provider`, `server`); details go to the server log only.
+4. The page to return to (`?redirect=`) must be an allowed origin; anything else is a 400, so the flow cannot be used as an
+   open redirector.
+
+**Who gets in.** The provider's stable identifier (`sub`), not the email, identifies a person — changing an email at the
+provider does not create a second account. For a first sign-in:
+
+| Situation | Result |
+|---|---|
+| Already bound to this provider (same identifier) | Signs in (if the account is active) |
+| An account was pre-created for this provider (`provider` set, no identifier yet) | Bound at the first sign-in |
+| An *invited* user with that email | Activated and bound — signing in with the provider accepts the invitation |
+| A Ferro password account with that email | **Refused**, unless the provider has `LINK_EXISTING_USERS=true` |
+| An account bound to another provider | **Refused** |
+| A suspended account | **Refused** |
+| Nobody has that email | Refused, unless the provider has `ALLOW_PUBLIC_REGISTRATION=true` (then created with `DEFAULT_ROLE`) |
+
+Further guards per provider: `REQUIRE_VERIFIED_EMAIL` (default on for OpenID: the ID token must say `email_verified`),
+`ALLOWED_EMAIL_DOMAINS` (exact domains), and https for every endpoint (plain http only for `localhost`). Roles are not
+derived from provider groups/claims: assign them in Ferro (or via `DEFAULT_ROLE`).
+
+#### Directory login (LDAP / Active Directory)
+
+Users type their directory login (e.g. `uid`) or email and directory password into the normal form. Ferro does the classic
+two steps: a service account (`FERRO_LDAP_BIND_DN`; anonymous if unset) **searches** for the one entry matching
+`FERRO_LDAP_USER_FILTER`, then Ferro **binds as that entry** with the typed password. The directory alone judges the
+password; Ferro stores no hash.
+
+- The typed login is **escaped per RFC 4515** before it enters the filter: `*`, `(`, `)`, `\` and NUL are plain
+  characters, so `*)(uid=*` cannot widen the search. No match, or several, is just "invalid credentials".
+- An **empty password is refused before talking to the directory** (a simple bind with an empty password is an
+  "unauthenticated bind" that most servers answer with success).
+- Accounts follow the same rules as single sign-on: bound by the entry's stable id (`entryUUID`; the DN if the server
+  returns none), pre-created or created on first sign-in (`FERRO_LDAP_ALLOW_PUBLIC_REGISTRATION`), existing password accounts
+  untouched unless `FERRO_LDAP_LINK_EXISTING_USERS`. A Ferro account with a password never falls through to the directory,
+  and a directory account never to a password.
+- Ferro's own second factor applies if the user enabled it. Wrong passwords count towards the login lockout; an unreachable
+  directory or a refused service account is `503 DIRECTORY_UNAVAILABLE` and is not counted against the user.
+- `ldaps://` verifies the server certificate (`FERRO_LDAP_TLS_VERIFY=false` only for test servers). STARTTLS
+  (`FERRO_LDAP_STARTTLS`) is implemented by the client library but not covered by the tests.
+
+#### Security events
+
+Password resets, invitations, second-factor changes and single sign-on logins are written to the server log under the target
+`ferro::audit` (with user ids and, for administrators' actions, who did it). They are not yet stored in `ferro_activity`.
+
 ### Hardening verified by the tests (`tests/e2e/05-security.mjs`)
 
 - **No user value in SQL**: values are always parameters, identifiers are validated
@@ -819,6 +946,7 @@ ferro storage migrate --from local --to s3 [--delete-source] [--dry-run]
                                               copy (checksum verified), update the row, then delete the source
 ferro user create     --email … --password … [--admin | --role <id>]
 ferro user token      --email …
+ferro user reset-tfa  --email …               remove a user's second factor (direct DB; lost phone, no other admin)
 ```
 
 `--from`/`--to` accept the name of an environment in `ferro.toml` or a path (a
@@ -896,6 +1024,18 @@ Jenkins example: see [`deploy/Jenkinsfile.example`](../deploy/Jenkinsfile.exampl
 | `FERRO_FLOW_ALLOW_PRIVATE` | `false` | lets flows call private addresses |
 | `FERRO_DB_MAX_CONNECTIONS` | 10 | |
 | `FERRO_LOGIN_MAX_FAILURES` / `FERRO_LOGIN_LOCKOUT_SECS` | 10 / 900 | login throttling per email |
+| `FERRO_PUBLIC_URL` | — | where users reach Ferro: base of every emailed link and of the single sign-on callback (never taken from the request) |
+| `FERRO_AUTH_REDIRECT_ALLOWLIST` | — | extra origins reset / invitation / sign-in flows may send users back to |
+| `FERRO_ENCRYPTION_KEY` | `FERRO_SECRET` | key for secrets stored in the database (two-factor seeds); changing it invalidates them |
+| `FERRO_TFA_ISSUER` | `Ferro` (`Ferro (<env>)` outside prod) | name shown in authenticator apps and emails |
+| `FERRO_SMTP_HOST`, `_PORT`, `_SECURE` (`starttls`/`tls`/`none`), `_USER`, `_PASSWORD`, `FERRO_EMAIL_FROM` | — | outgoing email (password reset, invitations) |
+| `FERRO_AUTH_PROVIDERS` | — | single sign-on provider names, comma-separated |
+| `FERRO_AUTH_<NAME>_DRIVER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_ISSUER_URL` / `_AUTHORIZE_URL`, `_TOKEN_URL`, `_PROFILE_URL`, `_JWKS_URL`, `_SCOPE` | `openid` | the provider (`openid` needs only the issuer; `oauth2` needs the three endpoints) |
+| `FERRO_AUTH_<NAME>_EMAIL_KEY`, `_IDENTIFIER_KEY`, `_FIRST_NAME_KEY`, `_LAST_NAME_KEY`, `_LABEL`, `_ICON` | `email`, `sub`/`id`, `given_name`, `family_name` | claims / profile fields to read, and the button text |
+| `FERRO_AUTH_<NAME>_REQUIRE_VERIFIED_EMAIL`, `_ALLOWED_EMAIL_DOMAINS`, `_ALLOW_PUBLIC_REGISTRATION`, `_DEFAULT_ROLE`, `_LINK_EXISTING_USERS` | on (OpenID) / off, —, `false`, —, `false` | who may sign in and what happens at the first sign-in |
+| `FERRO_LDAP_URL`, `_STARTTLS`, `_TLS_VERIFY`, `_BIND_DN`, `_BIND_PASSWORD`, `_USER_BASE_DN`, `_USER_FILTER`, `_TIMEOUT_SECS` | filter `(&(objectClass=person)(\|(uid={login})(mail={login})))` | directory login (see §9) |
+| `FERRO_LDAP_EMAIL_ATTRIBUTE`, `_FIRST_NAME_ATTRIBUTE`, `_LAST_NAME_ATTRIBUTE`, `_IDENTIFIER_ATTRIBUTE` | `mail`, `givenName`, `sn`, `entryUUID` | attributes to read |
+| `FERRO_LDAP_ALLOW_PUBLIC_REGISTRATION`, `_DEFAULT_ROLE`, `_LINK_EXISTING_USERS` | `false`, —, `false` | first sign-in rules, as for single sign-on |
 | `FERRO_LOG` | `info` | `tracing` filter |
 
 ### Scalability
@@ -960,7 +1100,9 @@ set; it uses only the public API. To develop against another server:
 | Data model | Collections and fields (types, relations, defaults, interface, validation). **Every save first runs a dry run and shows the plan and the SQL**; destructive changes are highlighted and need confirmation |
 | Access control | Roles and policies with permissions (fields, item filter, validation, presets), with the same plan preview |
 | Files | Library with folders, drag & drop, metadata, binary replacement, download; lists and previews load small cropped thumbnails (`?width=…&height=…&fit=cover`) instead of the originals |
-| Users | Users, roles, status, password, API token generation |
+| Users | Users, roles, status, password, API token generation; **invite by email** (or get the link when Ferro cannot send mail); sign-in method and 2FA columns; remove someone's second factor |
+| My account | Who am I, how I sign in; set up two-factor authentication (QR code, manual key, recovery codes) and turn it off |
+| Sign-in | Email + password, a code step for two-factor accounts, "Forgot your password?", one button per single sign-on provider; the reset-password, invitation and sign-in-return pages (`#/reset`, `#/invite`, `#/sso`) work before anybody is signed in |
 | Environment | Name and schema hash, change history, YAML snapshot download, **alignment to another environment** (URL + token) or to a JSON snapshot, always with a preview |
 | Activity | Audit by collection/action |
 
@@ -1009,6 +1151,8 @@ services through `request`); arbitrary Rust code has to be compiled into the bin
   expansion, nested writes, singletons
 - Auth (password, JWT, refresh, static tokens), RBAC with policies
   (fields/filters/validation/presets, public ones)
+- Two-factor authentication (TOTP + recovery codes), password reset and invitations by
+  email, single sign-on (OpenID Connect / OAuth 2.0), LDAP login (§9)
 - Files and folders with local, S3 (and compatibles) or Azure Blob storage, assets
   with permissions, on-the-fly image transformations (resize, crop, formats)
 - Activity and revisions
@@ -1025,10 +1169,12 @@ services through `request`); arbitrary Rust code has to be compiled into the bin
 ### Known limits
 
 - **State of verification** (2026-10-09): the workspace builds without warnings;
-  84 Rust tests, 31 Admin UI tests, **430 integration checks** over two environments
+  108 Rust tests, 46 Admin UI tests, **655 integration checks** over several environments
   with a real PostgreSQL 16 (schema, sync, flows, GraphQL, security, realtime —
   including two instances on the same database — storage against an
-  S3-compatible server, and image transformations checked pixel by pixel) and **36 checks in a real browser** (Edge/Chromium). They run
+  S3-compatible server, image transformations checked pixel by pixel, and the identity flows — two-factor, password reset, invitations, single
+  sign-on and LDAP — against a fake SMTP server, a mock OpenID provider and a real LDAP server) and **68 checks in a real browser** (Edge/Chromium; including the reset, invitation, two-factor and single sign-on
+  screens end to end). They run
   with `scripts/ci.sh [browser]` (GitHub workflow in `.github/workflows/ci.yml`);
   details in `tests/README.md`.
 - Never run: the Docker image, the compose file, the example Jenkinsfile and the first
@@ -1036,6 +1182,22 @@ services through `request`); arbitrary Rust code has to be compiled into the bin
   S3-compatible server (SeaweedFS), never against AWS itself; the Azure driver only
   against a fake blob service in unit tests.
 - No load tests; no independent security audit.
+- **Identity: what was and was not exercised.** Single sign-on has been tested against a mock OpenID provider written for the
+  test suite (it signs real RS256 tokens and enforces PKCE and the client secret), not against Microsoft Entra ID, Google or
+  Okta themselves; provider quirks (for example Entra not sending `email_verified`, which needs
+  `REQUIRE_VERIFIED_EMAIL=false`, or GitHub hiding private emails) are yours to configure. ID tokens signed with RS*, PS* or
+  ES256/384 are accepted; EdDSA is not. LDAP was tested against ldapjs over plain `ldap://` and `ldaps://`; STARTTLS, Active
+  Directory specifics (`objectGUID`, referrals, paged results) and SMTP over TLS/STARTTLS were not exercised (the SMTP
+  transports are only constructed in tests; delivery was checked over plain SMTP).
+- **Identity: not implemented.** SAML; passkeys / WebAuthn; requiring two-factor for everybody or per role; mapping directory
+  groups or provider claims to roles; user provisioning/deprovisioning from a directory (an account removed there keeps its
+  Ferro account until someone suspends it, though it can no longer sign in through the directory); listing and revoking
+  sessions; confirming a changed email address.
+- **Identity: operations.** Login and reset throttling is per instance (memory), like the rest of the rate limiting. The client
+  address comes from `X-Forwarded-For`: run Ferro behind a proxy that overwrites that header, or the per-address limits can
+  be dodged (the per-account limits still hold). Anybody can use up the reset-request allowance of an address (5 an hour) to
+  stop its owner from asking; a locked reset only delays them. Rotating `FERRO_SECRET` without a separate
+  `FERRO_ENCRYPTION_KEY` locks every two-factor user out until an administrator resets them.
 - Nested relational filters support m2o and o2m-like relations (not `m2a_item`).
 - Query-string filters only in JSON form (`filter={…}`), not in the
   `filter[field][_eq]=` form.
@@ -1062,3 +1224,5 @@ services through `request`); arbitrary Rust code has to be compiled into the bin
    operations; realtime for imports and files as well
 7. Content drafts/versions and scheduled publishing
 8. OpenAPI generated from the snapshot (types for frontends)
+9. Identity: WebAuthn / passkeys, enforced two-factor by role, group-to-role mapping for directory and single sign-on,
+   SAML, security events in `ferro_activity` and a session manager (see "Known limits")

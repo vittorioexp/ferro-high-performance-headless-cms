@@ -22,6 +22,10 @@ data model, permissions and content between environments** (dev → test → pro
   `ferro storage migrate` moves files between locations (`FERRO_STORAGE_*`, see the docs).
 - **Image transformations** on `/assets/:id`: resize, crop, fit modes, JPEG / PNG / WebP output and quality, with
   limits against abuse, an in-memory cache and `ETag` / `304` (`?width=300&height=200&fit=cover&format=webp`).
+- **Sign-in options**: single sign-on with any **OpenID Connect / OAuth 2.0** provider (Microsoft Entra ID, Google, Okta,
+  Keycloak…; PKCE, verified ID tokens), **LDAP / Active Directory** login, **two-factor authentication** (TOTP with recovery
+  codes), **password reset by email** and **invitations** — all configured with environment variables (`FERRO_AUTH_*`,
+  `FERRO_LDAP_*`, `FERRO_SMTP_*`, see the docs).
 - **GraphQL** with the same permissions (`POST /graphql`, SDL schema at `/graphql/schema`):
   typed relations, M2A blocks as unions (`... on block_text`), transactional mutations.
 
@@ -34,6 +38,7 @@ crates/
   ferro-core     model, validation, diff/plan, filters, bundles, reports (no database I/O)
   ferro-engine   PostgreSQL: DDL, queries, items, permissions, auth, files, sync
   ferro-storage  storage drivers: disk, S3 and compatibles, Azure Blob
+  ferro-identity single sign-on (OpenID Connect / OAuth 2.0), LDAP login, outgoing email
   ferro-server   HTTP API (axum)
   ferro-cli      the `ferro` binary: server + environment tools
 admin/           Admin UI (plain JavaScript, no build step), served on /admin
@@ -92,7 +97,7 @@ cargo test                # unit tests of the crates (no database needed)
 (cd admin && node --test test/*.test.mjs)   # Admin UI tests (Node >= 20)
 ```
 
-> Status: builds without warnings; 84 Rust tests + 31 Admin UI tests + 430 integration
-> checks + 36 browser checks, run end to end against PostgreSQL 16 with two environments,
+> Status: builds without warnings; 108 Rust tests + 46 Admin UI tests + 655 integration
+> checks + 68 browser checks, run end to end against PostgreSQL 16 with two environments,
 > an S3-compatible server and a real browser (see "Known limits" in
 > docs/ARCHITECTURE.md). The CI workflow is written but has not yet run on a real runner.

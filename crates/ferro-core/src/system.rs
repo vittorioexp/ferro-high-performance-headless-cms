@@ -46,6 +46,8 @@ pub fn system_collections() -> Vec<Collection> {
                 f("role", FieldType::Uuid),
                 f("status", FieldType::String),
                 f("language", FieldType::String),
+                f("provider", FieldType::String),
+                f("tfa_enabled", FieldType::Boolean),
                 f("last_access", FieldType::Datetime),
                 f("date_created", FieldType::Datetime),
             ],

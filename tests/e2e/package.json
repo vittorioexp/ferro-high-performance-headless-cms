@@ -1,0 +1,9 @@
+{
+  "name": "ferro-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Integration suite support: a real LDAP server (ldapjs) for the directory-login tests",
+  "dependencies": {
+    "ldapjs": "^3.0.7"
+  }
+}

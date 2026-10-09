@@ -167,3 +167,50 @@ pub async fn rotate_token(State(st): State<AppState>, Acc(acc): Acc, Path(id): P
     let token = auth::rotate_static_token(&mut conn, id).await?;
     Ok(Json(json!({ "data": { "token": token } })))
 }
+
+#[derive(Deserialize)]
+pub struct InviteBody {
+    email: String,
+    role: Option<Uuid>,
+    /// Where the link in the email should point (an allowed origin); default: the admin app.
+    invite_url: Option<String>,
+}
+
+/// Invite someone by email: they get a link to choose a password. Without outgoing email configured the link is
+/// returned to the administrator, who can pass it on by other means.
+pub async fn invite(State(st): State<AppState>, Acc(acc): Acc, Json(body): Json<InviteBody>) -> ApiResult<Json<Value>> {
+    acc.require_admin()?;
+    check_role(&st, body.role)?;
+    let base = st.link_base(body.invite_url.as_deref(), "/admin/#/invite")?;
+    let mut tx = st.pool.begin().await?;
+    let invitation = auth::invite_user(&mut tx, &body.email, body.role).await?;
+    tx.commit().await?;
+    tracing::info!(target: "ferro::audit", admin = ?acc.user, user = %invitation.user, "user invited");
+    let link = crate::with_token(&base, &invitation.token);
+    let mut delivery = "link";
+    if st.mailer.enabled() {
+        let m = ferro_identity::mail::invitation_message(&st.config.tfa_issuer, &link);
+        match st.mailer.send(body.email.trim(), &m.subject, &m.text, &m.html).await {
+            Ok(()) => delivery = "email",
+            Err(e) => tracing::error!(error = %e, "invitation email failed: the link is returned to the administrator instead"),
+        }
+    }
+    let mut data = json!({ "id": invitation.user, "email": body.email.trim(), "status": "invited", "created": invitation.created, "delivery": delivery });
+    if delivery == "link" {
+        data["invite_url"] = json!(link);
+    }
+    Ok(Json(json!({ "data": data })))
+}
+
+/// An administrator removes a user's second factor (lost phone, no recovery codes).
+pub async fn reset_tfa(State(st): State<AppState>, Acc(acc): Acc, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+    acc.require_admin()?;
+    let mut conn = st.pool.acquire().await?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM ferro_users WHERE id = $1)").bind(id).fetch_one(&mut *conn).await?;
+    if !exists {
+        return Err(FerroError::not_found("user not found").into());
+    }
+    auth::tfa_reset(&mut conn, id).await?;
+    tracing::info!(target: "ferro::audit", admin = ?acc.user, user = %id, "two-factor authentication removed by an administrator");
+    Ok(StatusCode::NO_CONTENT)
+}

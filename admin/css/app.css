@@ -159,3 +159,17 @@ pre.token { user-select: all; word-break: break-all; white-space: pre-wrap; }
   .sidebar { border-right: 0; border-bottom: 1px solid var(--border); max-height: 30vh; }
   main { padding: .8rem; }
 }
+
+/* sign-in extras, account security */
+.login-extras { display: flex; flex-direction: column; gap: .6rem; margin-top: .8rem; align-items: stretch; }
+.forgot-link { font-size: .85rem; text-align: center; }
+.sso-divider { text-align: center; }
+.sso-button { display: block; text-align: center; padding: .55rem .8rem; border: 1px solid var(--border); border-radius: var(--radius); }
+.otp-row[hidden] { display: none; }
+.row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .8rem; }
+.ok { color: var(--ok); }
+img.qr { display: block; background: #fff; padding: 8px; border-radius: var(--radius); margin: .6rem 0; }
+code.secret { display: inline-block; font-size: 1.05rem; letter-spacing: .08em; padding: .3rem .5rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); user-select: all; }
+pre.recovery { columns: 2; column-gap: 2rem; }
+a.account-link { text-decoration: none; }
+a.account-link:hover { text-decoration: underline; }

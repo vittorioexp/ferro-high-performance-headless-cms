@@ -29,6 +29,8 @@ impl From<FerroError> for ApiError {
             FerroError::NotFound(_) => ApiError::new(StatusCode::NOT_FOUND, "NOT_FOUND", message),
             FerroError::Forbidden(_) => ApiError::new(StatusCode::FORBIDDEN, "FORBIDDEN", message),
             FerroError::Unauthorized(_) => ApiError::new(StatusCode::UNAUTHORIZED, "UNAUTHORIZED", message),
+            FerroError::AuthCode("DIRECTORY_UNAVAILABLE", _) => ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "DIRECTORY_UNAVAILABLE", message),
+            FerroError::AuthCode(code, _) => ApiError::new(StatusCode::UNAUTHORIZED, code, message),
             FerroError::Invalid(_) => ApiError::new(StatusCode::BAD_REQUEST, "INVALID_PAYLOAD", message),
             FerroError::Conflict(_) => ApiError::new(StatusCode::CONFLICT, "CONFLICT", message),
             FerroError::Db(sqlx::Error::RowNotFound) => ApiError::new(StatusCode::NOT_FOUND, "NOT_FOUND", message),

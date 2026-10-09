@@ -6,6 +6,9 @@ pub enum FerroError {
     Forbidden(String),
     #[error("{0}")]
     Unauthorized(String),
+    /// 401 with a specific code the client can act on (`OTP_REQUIRED`, `INVALID_OTP`).
+    #[error("{1}")]
+    AuthCode(&'static str, String),
     #[error("{0}")]
     Invalid(String),
     #[error("{0}")]

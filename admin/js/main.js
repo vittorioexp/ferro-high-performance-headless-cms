@@ -18,6 +18,8 @@ import { loginView } from './views/login.js';
 import { modelCollection, modelHome } from './views/model.js';
 import { activityView, schemaView } from './views/system.js';
 import { usersView } from './views/users.js';
+import { accountView } from './views/account.js';
+import { inviteView, resetView, ssoView } from './views/auth.js';
 
 const app = document.getElementById('app');
 
@@ -47,6 +49,7 @@ const ROUTES = [
   ['/content', home, false],
   ['/content/:collection', contentList, false],
   ['/content/:collection/:id', contentItem, false],
+  ['/account', accountView, false],
   ['/files', filesView, false],
   ['/graphql', graphqlView, false],
   ['/ext/:id', extensionPage, false],
@@ -135,7 +138,7 @@ function renderShell() {
         h('a', { class: 'brand', href: '#/content' }, 'Ferro'),
         env ? h('span', { class: `env env-${String(env).toLowerCase()}` }, env) : null,
         h('span', { class: 'spacer' }),
-        h('span', { class: 'muted' }, who),
+        h('a', { class: 'muted account-link', href: '#/account', title: 'My account and security' }, who),
         button('Sign out', async () => {
           await logout();
           showLogin();
@@ -171,7 +174,27 @@ function showLogin(message) {
 
 window.addEventListener('hashchange', () => route());
 
+/**
+ * Hash routes that work before anybody is signed in: `#/reset?token=…` (emailed password reset), `#/invite?token=…`
+ * (invitation) and `#/sso?code=…` / `#/sso?error=…` (return from a single sign-on provider). The secret is taken out
+ * of the address bar and the history at once.
+ */
+function preAuthRoute() {
+  const [path, query = ''] = location.hash.slice(1).split('?');
+  if (!['/reset', '/invite', '/sso'].includes(path)) return null;
+  if (typeof history !== 'undefined') history.replaceState(null, '', location.pathname + location.search);
+  return { path, params: new URLSearchParams(query) };
+}
+
 (async () => {
+  const pre = preAuthRoute();
+  if (pre) {
+    const token = pre.params.get('token');
+    if (pre.path === '/sso') return ssoView(app, pre.params, start, () => showLogin());
+    if (!token) return showLogin('That link is incomplete. Open it again from the email.');
+    if (pre.path === '/reset') return resetView(app, token, () => showLogin());
+    return inviteView(app, token, start);
+  }
   try {
     if (await restoreSession()) {
       await start();

@@ -59,6 +59,7 @@ fn code(e: &FerroError) -> &'static str {
         FerroError::NotFound(_) => "NOT_FOUND",
         FerroError::Forbidden(_) => "FORBIDDEN",
         FerroError::Unauthorized(_) => "UNAUTHORIZED",
+        FerroError::AuthCode(code, _) => code,
         FerroError::Invalid(_) => "INVALID_PAYLOAD",
         FerroError::Conflict(_) => "CONFLICT",
         FerroError::Db(_) => match e.sqlstate().as_deref() {

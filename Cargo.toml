@@ -4,6 +4,7 @@ members = [
     "crates/ferro-core",
     "crates/ferro-engine",
     "crates/ferro-storage",
+    "crates/ferro-identity",
     "crates/ferro-server",
     "crates/ferro-cli",
 ]
@@ -19,16 +20,22 @@ ferro-core = { path = "crates/ferro-core" }
 ferro-engine = { path = "crates/ferro-engine" }
 ferro-server = { path = "crates/ferro-server" }
 ferro-storage = { path = "crates/ferro-storage" }
+ferro-identity = { path = "crates/ferro-identity" }
 
 anyhow = "1"
 async-trait = "0.1"
 argon2 = { version = "0.5", features = ["std"] }
+aes-gcm = "0.10"
+base64 = "0.22"
 axum = { version = "0.7", features = ["multipart", "macros", "ws"] }
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
 hex = "0.4"
+hmac = "0.12"
+sha1 = "0.10"
+url = "2"
 jsonwebtoken = "9"
 mime_guess = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -46,6 +46,7 @@ jobs:
           npm install --no-audit --no-fund
           npx playwright-core install --with-deps chromium
           node run.mjs
+          node auth.mjs
       - name: Server logs of the failed run
         if: failure()
         uses: actions/upload-artifact@v4

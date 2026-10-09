@@ -14,6 +14,7 @@
 //! ferro storage list                            configured locations and how many files each holds
 //! ferro storage check                           write probe on every location + every file present
 //! ferro storage migrate --from local --to assets [--delete-source] [--dry-run]
+//! ferro user reset-tfa --email ...                remove the second factor of a user (direct DB)
 //! ferro user create  --email admin@example.com --password ... --admin   (direct DB)
 //! ```
 
@@ -274,6 +275,11 @@ enum UserCommand {
         #[arg(long)]
         email: String,
     },
+    /// Remove a user's two-factor authentication (lost phone, and no other administrator to do it).
+    ResetTfa {
+        #[arg(long)]
+        email: String,
+    },
 }
 
 fn init_tracing() {
@@ -366,6 +372,11 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
                     )
                     .await?;
                     println!("created user {email} ({id})");
+                }
+                UserCommand::ResetTfa { email } => {
+                    let Some(id) = ferro_engine::auth::user_id_by_email(&mut conn, &email).await? else { anyhow::bail!("user {email} not found") };
+                    ferro_engine::auth::tfa_reset(&mut conn, id).await?;
+                    println!("two-factor authentication removed for {email}");
                 }
                 UserCommand::Token { email } => {
                     let id: Option<uuid::Uuid> = ferro_engine::auth::user_id_by_email(&mut conn, &email).await?;

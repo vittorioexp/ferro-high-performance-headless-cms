@@ -24,6 +24,16 @@ pub fn router() -> Router<AppState> {
         .route("/auth/login", post(auth::login))
         .route("/auth/refresh", post(auth::refresh))
         .route("/auth/logout", post(auth::logout))
+        .route("/auth/methods", get(auth::methods))
+        .route("/auth/oauth/exchange", post(auth::oauth_exchange))
+        .route("/auth/oauth/:name", get(auth::oauth_start))
+        .route("/auth/oauth/:name/callback", get(auth::oauth_callback))
+        .route("/auth/password/request", post(auth::password_request))
+        .route("/auth/password/reset", post(auth::password_reset))
+        .route("/auth/invite/accept", post(auth::invite_accept))
+        .route("/auth/tfa/generate", post(auth::tfa_generate))
+        .route("/auth/tfa/enable", post(auth::tfa_enable))
+        .route("/auth/tfa/disable", post(auth::tfa_disable))
         // items
         .route(
             "/items/:collection",
@@ -49,9 +59,11 @@ pub fn router() -> Router<AppState> {
         .route("/schema/history", get(schema::history))
         // users
         .route("/users", get(users::list).post(users::create))
+        .route("/users/invite", post(users::invite))
         // `/users/me` is handled by get_one
         .route("/users/:id", get(users::get_one).patch(users::update).delete(users::remove))
         .route("/users/:id/token", post(users::rotate_token))
+        .route("/users/:id/tfa", delete(users::reset_tfa))
         // files
         .route("/files", get(files::list).post(files::upload))
         .route("/files/:id", get(files::get_one).patch(files::update).delete(files::remove))

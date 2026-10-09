@@ -9,6 +9,7 @@ license.workspace = true
 ferro-core.workspace = true
 ferro-engine.workspace = true
 ferro-storage.workspace = true
+ferro-identity.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 bytes.workspace = true

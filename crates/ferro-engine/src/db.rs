@@ -146,6 +146,26 @@ CREATE TABLE ferro_flow_runs (
 );
 CREATE INDEX ferro_flow_runs_flow_idx ON ferro_flow_runs (flow_id, started DESC);
 "#,
+), (
+    3,
+    r#"
+ALTER TABLE ferro_users
+    ADD COLUMN provider            varchar(64),
+    ADD COLUMN external_identifier varchar(255),
+    ADD COLUMN tfa_secret          text,
+    ADD COLUMN tfa_last_step       bigint,
+    ADD COLUMN tfa_recovery        jsonb,
+    ADD COLUMN tfa_enabled         boolean GENERATED ALWAYS AS (tfa_secret IS NOT NULL) STORED;
+CREATE UNIQUE INDEX ferro_users_external_idx ON ferro_users (provider, external_identifier) WHERE external_identifier IS NOT NULL;
+CREATE TABLE ferro_auth_tokens (
+    token_hash  text PRIMARY KEY,
+    user_id     uuid NOT NULL REFERENCES ferro_users(id) ON DELETE CASCADE,
+    kind        varchar(16) NOT NULL,
+    expires     timestamptz NOT NULL,
+    created     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX ferro_auth_tokens_user_idx ON ferro_auth_tokens (user_id, kind);
+"#,
 )];
 
 /// Create / upgrade the system tables. Safe to run concurrently (advisory lock).

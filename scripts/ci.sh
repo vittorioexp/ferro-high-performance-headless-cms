@@ -15,10 +15,11 @@ echo "== clippy (errors only)"
 cargo clippy --workspace --all-targets -- -A clippy::all -D clippy::correctness
 echo "== Admin UI unit tests"
 (cd admin && node --test test/*.test.mjs)
-echo "== integration suite (two environments, real PostgreSQL)"
+echo "== integration suite (two environments, real PostgreSQL; mock SMTP, OpenID provider and LDAP server run in Node)"
+(cd tests/e2e && npm install --no-audit --no-fund)
 node tests/e2e/run.mjs
 if [ "${1:-}" = "browser" ]; then
   echo "== browser suite"
-  (cd tests/browser && npm install --no-audit --no-fund && node run.mjs)
+  (cd tests/browser && npm install --no-audit --no-fund && node run.mjs && node auth.mjs)
 fi
 echo "== all green"

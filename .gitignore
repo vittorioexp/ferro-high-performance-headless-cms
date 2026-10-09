@@ -7,3 +7,4 @@ uploads/
 bundle*/
 
 tests/browser/node_modules
+tests/e2e/node_modules
