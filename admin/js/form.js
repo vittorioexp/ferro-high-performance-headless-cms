@@ -150,6 +150,8 @@ function fieldWidget(c, field, value, ctx) {
       return ctx.depth >= MAX_DEPTH ? tooDeep() : manyToMany(field, initial, readonly);
     case 'm2a':
       return ctx.depth >= MAX_DEPTH ? tooDeep() : blocksEditor(field, initial, ctx.depth, readonly);
+    case 'translations':
+      return ctx.depth >= MAX_DEPTH ? tooDeep() : translationsEditor(field, initial, ctx.depth, readonly);
     default:
       // uuid, m2a_item (raw), anything unknown
       return textInput(field, initial, 'text', readonly);
@@ -390,6 +392,104 @@ function childrenEditor(field, value, depth, readonly) {
             if (sortField) o[sortField] = i + 1;
             return o;
           }),
+  };
+}
+
+// ---- translations -----------------------------------------------------------------
+
+/**
+ * One tab per language. The value written back is keyed by language code — `{ "it-IT": {...}, "en-US": null }` — which
+ * the API merges: languages that are not mentioned are untouched, `null` removes a translation.
+ */
+function translationsEditor(field, value, depth, readonly) {
+  const rel = field.relation || {};
+  const child = rel.related;
+  const ff = rel.foreign_field;
+  const lf = rel.language_field;
+  const key = rel.language_key || 'code';
+  const languagesCollection = S.relatedCollection((S.getCollection(child)?.fields || []).find((x) => x.name === lf) || {});
+  const box = h('div', { class: 'translations-editor' }, h('p', { class: 'muted' }, 'Loading languages…'));
+  const state = { ready: false, languages: [], present: new Map(), removed: new Map(), active: null };
+
+  const codeOf = (l) => String(l[key] ?? l.id);
+  const makeRow = (language, item) => ({ language, id: item?.id, form: renderForm(child, item, { depth: depth + 1, hide: [ff, lf] }) });
+
+  function draw() {
+    if (!state.languages.length) {
+      replace(box, h('p', { class: 'muted' }, 'There are no languages yet. Add some to ', h('a', { href: `#/content/${languagesCollection}` }, S.collectionLabel(languagesCollection || 'languages')), ' first.'));
+      return;
+    }
+    const present = [...state.present.values()].sort((a, b) => codeOf(a.language).localeCompare(codeOf(b.language)));
+    if (!present.some((r) => r.language.id === state.active)) state.active = present[0]?.language.id ?? null;
+    const missing = state.languages.filter((l) => !state.present.has(l.id));
+    const active = state.present.get(state.active);
+    replace(
+      box,
+      h(
+        'div',
+        { class: 'tabs', role: 'tablist' },
+        present.map((r) =>
+          h('button', { type: 'button', role: 'tab', class: `tab${r.language.id === state.active ? ' active' : ''}`, 'data-language': codeOf(r.language), onClick: () => ((state.active = r.language.id), draw()) }, codeOf(r.language)),
+        ),
+        readonly || !missing.length
+          ? null
+          : h('select', { class: 'add-language', 'aria-label': 'Add a language', onChange: (e) => {
+              const language = state.languages.find((l) => l.id === e.target.value);
+              if (!language) return;
+              state.removed.delete(language.id);
+              state.present.set(language.id, makeRow(language, null));
+              state.active = language.id;
+              draw();
+            } }, h('option', { value: '' }, '+ Add a language'), missing.map((l) => h('option', { value: l.id }, `${codeOf(l)}${l.name ? ` — ${l.name}` : ''}`))),
+      ),
+      active
+        ? h(
+            'div',
+            { class: 'tab-panel', role: 'tabpanel' },
+            active.form.el,
+            readonly
+              ? null
+              : button(
+                  `Remove ${codeOf(active.language)}`,
+                  () => {
+                    state.present.delete(active.language.id);
+                    if (active.id) state.removed.set(active.language.id, active.language);
+                    draw();
+                  },
+                  'sm danger',
+                ),
+          )
+        : h('p', { class: 'muted' }, readonly ? 'No translations.' : 'No translations yet: add a language.'),
+    );
+  }
+
+  if (!languagesCollection) {
+    replace(box, h('p', { class: 'error-box' }, 'This translations field has no language field: fix the field in the data model.'));
+    return { el: box, get: () => undefined };
+  }
+  loadOptions(languagesCollection)
+    .then((languages) => {
+      state.languages = languages;
+      for (const item of Array.isArray(value) ? value : []) {
+        if (!item || typeof item !== 'object') continue;
+        const lid = objectId(item[lf]);
+        const language = languages.find((l) => l.id === lid);
+        if (language) state.present.set(language.id, makeRow(language, item));
+      }
+      state.ready = true;
+      draw();
+    })
+    .catch((e) => replace(box, h('p', { class: 'error-box' }, `Cannot load the languages: ${e.message}`)));
+
+  return {
+    el: box,
+    get: () => {
+      if (readonly || !state.ready) return undefined;
+      const out = {};
+      for (const r of state.present.values()) out[codeOf(r.language)] = r.form.collect();
+      for (const l of state.removed.values()) out[codeOf(l)] = null;
+      return out;
+    },
   };
 }
 

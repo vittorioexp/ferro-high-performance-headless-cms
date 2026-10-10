@@ -277,6 +277,64 @@ try {
   await mobile.waitForSelector('table');
   check('mobile layout: no horizontal scroll of the page', await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2));
 
+  // ======================================================================================================
+  console.log('\n## translations');
+  await signIn(page); // the session section above signed this page out
+  await env.rest('POST', '/items/languages', { code: 'it-IT', name: 'Italiano' });
+  await env.rest('POST', '/items/languages', { code: 'en-US', name: 'English' });
+  await page.goto(`${ADMIN}#/content/pages/${home.id}`);
+  await page.waitForSelector('.translations-editor select.add-language');
+  check('the page form has a translations editor; a page without translations says so', /No translations yet/.test(await page.textContent('.translations-editor')));
+  await page.selectOption('.translations-editor select.add-language', { label: 'it-IT — Italiano' });
+  await page.waitForSelector('.tab-panel input[type=text]');
+  check('adding a language opens its tab with the translatable fields (not the link fields)', (await page.$$eval('.tabs .tab', (t) => t.map((x) => x.textContent))).join() === 'it-IT' && !(await page.textContent('.tab-panel')).includes('Languages Code'));
+  await page.locator('.tab-panel input[type=text]').first().fill('Ciao dal browser');
+  await page.click('button:has-text("Save")');
+  await page.waitForSelector('.toast.ok >> nth=-1');
+  let viaLang = (await env.rest('GET', `/items/pages/${home.id}?fields=title,summary&lang=it-IT`)).data;
+  check('saving writes the translation (read back with lang=it-IT)', viaLang.title === 'Ciao dal browser' && viaLang._language === 'it-IT', viaLang);
+  await page.reload();
+  await page.waitForSelector('.tabs .tab');
+  check('after a reload the tab and its value are there', (await page.locator('.tab-panel input[type=text]').first().inputValue()) === 'Ciao dal browser');
+  await page.selectOption('.translations-editor select.add-language', { label: 'en-US — English' });
+  await page.locator('.tab-panel input[type=text]').first().fill('Hello from the browser');
+  await page.click('button:has-text("Save")');
+  await page.waitForSelector('.toast.ok >> nth=-1');
+  viaLang = (await env.rest('GET', `/items/pages/${home.id}?fields=title&lang=en-US,it-IT`)).data;
+  check('a second language is added without touching the first', viaLang.title === 'Hello from the browser' && (await env.rest('GET', `/items/pages/${home.id}?fields=title&lang=it-IT`)).data.title === 'Ciao dal browser');
+  await page.click('.tab[data-language="it-IT"]');
+  await page.click('button:has-text("Remove it-IT")');
+  await page.click('button:has-text("Save")');
+  await page.waitForSelector('.toast.ok >> nth=-1');
+  await sleep(900); // the toast of the previous save may still be on screen: give this save time to finish
+  check('removing a language deletes only its translation', (await env.rest('GET', `/items/pages/${home.id}?fields=title&lang=it-IT`)).data._language === null && (await env.rest('GET', `/items/pages/${home.id}?fields=title&lang=en-US`)).data.title === 'Hello from the browser');
+
+  console.log('\n## making a collection translatable');
+  await page.goto(`${ADMIN}#/model/ui_posts`);
+  await page.waitForSelector('button:has-text("+ New field")');
+  await page.click('button:has-text("+ New field")');
+  await page.fill('input[placeholder=field_name] >> nth=0', 'texts');
+  await page.selectOption('.modal select >> nth=0', 'translations');
+  await page.waitForSelector('.modal textarea[name=languages]');
+  check('choosing the translations type shows the guided set-up (no column options)', (await page.textContent('.modal')).includes('This creates, in one step') && !(await page.textContent('.modal')).includes('Required (NOT NULL)'));
+  await page.click('.modal button:has-text("Save")');
+  await page.waitForSelector('.changes li');
+  const trPlan = await page.$$eval('.changes li', (e) => e.map((x) => x.textContent));
+  check('the plan lists the translations collection and the field before anything is applied', trPlan.some((p) => p.includes('ui_posts_translations')) && trPlan.some((p) => p.includes('texts')), trPlan.join('; '));
+  check('…and nothing exists yet', (await env.rest('GET', '/collections/ui_posts_translations')).status === 404);
+  await page.click('.modal button:has-text("Apply")');
+  await page.waitForSelector('.toast.ok');
+  await sleep(800);
+  const texts = (await env.rest('GET', '/collections/ui_posts')).data.fields.find((f) => f.name === 'texts');
+  check('applying creates the field and the collection with its guarantee', texts?.type === 'translations' && (await env.rest('GET', '/collections/ui_posts_translations')).data.fields.find((f) => f.name === 'languages_id')?.unique_with?.join() === 'ui_posts_id', texts);
+  await page.goto(`${ADMIN}#/content/ui_posts/${post.id}`);
+  await page.waitForSelector('.translations-editor select.add-language');
+  await page.selectOption('.translations-editor select.add-language', { label: 'en-US — English' });
+  await page.locator('.tab-panel input[type=text]').first().fill('Title in English');
+  await page.click('button:has-text("Save")');
+  await page.waitForSelector('.toast.ok >> nth=-1');
+  check('the new field is immediately usable in the item form', (await env.rest('GET', `/items/ui_posts/${post.id}?fields=title&lang=en-US`)).data._language === 'en-US');
+
   console.log('\nbrowser errors:', errors.length ? `\n  ${[...new Set(errors)].join('\n  ')}` : 'none');
   check('no JavaScript errors in the console', errors.length === 0, errors.slice(0, 3));
   ok = summary();

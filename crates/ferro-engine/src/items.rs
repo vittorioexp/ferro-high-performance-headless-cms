@@ -297,7 +297,7 @@ async fn expand_field(
                 }
             }
         }
-        FieldType::O2m | FieldType::M2m | FieldType::M2a => {
+        FieldType::O2m | FieldType::M2m | FieldType::M2a | FieldType::Translations => {
             let (Some(related), Some(ff)) = (f.related_collection(), f.foreign_field()) else { return Ok(()) };
             let (related, ff) = (related.to_string(), ff.to_string());
             if permissions::access(&ctx.acc, &related, Action::Read).is_err() {
@@ -732,7 +732,7 @@ async fn write_children(ctx: &Ctx, conn: &mut PgConnection, f: &Field, parent: U
     let related_info = ctx.schema.collection(&related)?;
     let ff_required = related_info.field(&ff).map(|x| x.required).unwrap_or(false);
     // junction rows and children that cannot exist without the parent are deleted, others detached
-    let delete_detached = ff_required || matches!(f.ty, FieldType::M2m | FieldType::M2a);
+    let delete_detached = ff_required || matches!(f.ty, FieldType::M2m | FieldType::M2a | FieldType::Translations);
 
     let with_parent = |v: Value| -> Result<Value> {
         let mut obj = match v {
@@ -763,6 +763,9 @@ async fn write_children(ctx: &Ctx, conn: &mut PgConnection, f: &Field, parent: U
             if !is_create {
                 detach_except(ctx, conn, &related, &ff, parent, &keep, delete_detached).await?;
             }
+        }
+        Value::Object(ops) if f.ty == FieldType::Translations && crate::translations::is_language_map(&ops) => {
+            return crate::translations::write_language_map(ctx, conn, f, parent, ops).await;
         }
         Value::Object(ops) => {
             if let Some(Value::Array(list)) = ops.get("create") {

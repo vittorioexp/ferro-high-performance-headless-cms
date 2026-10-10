@@ -38,7 +38,7 @@ const SYSTEM = {
 
 export const SYSTEM_FIELD_NAMES = ['date_created', 'user_created', 'date_updated', 'user_updated'];
 export const SYSTEM_COLLECTIONS = Object.keys(SYSTEM);
-export const FIELD_TYPES = ['string', 'text', 'integer', 'bigint', 'float', 'decimal', 'boolean', 'uuid', 'json', 'date', 'datetime', 'time', 'm2o', 'file', 'o2m', 'm2m', 'm2a', 'm2a_item'];
+export const FIELD_TYPES = ['string', 'text', 'integer', 'bigint', 'float', 'decimal', 'boolean', 'uuid', 'json', 'date', 'datetime', 'time', 'm2o', 'file', 'o2m', 'm2m', 'm2a', 'translations', 'm2a_item'];
 
 export function setCollections(list) {
   collections = new Map((list || []).map((c) => [c.name, c]));
@@ -52,7 +52,7 @@ export function userCollections() {
   return [...collections.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export const isAlias = (field) => ['o2m', 'm2m', 'm2a'].includes(field.type);
+export const isAlias = (field) => ['o2m', 'm2m', 'm2a', 'translations'].includes(field.type);
 export const isRelational = (field) => isAlias(field) || ['m2o', 'file', 'm2a_item'].includes(field.type);
 
 export function collectionLabel(c) {
@@ -118,6 +118,8 @@ export function relationPaths(collectionName, prefix = '', depth = 3) {
     const p = prefix + field.name;
     if (field.type === 'file') {
       out.push(`${p}.*`); // file name and type for the preview
+    } else if (field.type === 'translations') {
+      out.push(`${p}.*`); // every translation, with its fields; the editor shows one tab per language
     } else if (field.type === 'o2m' || field.type === 'm2m') {
       out.push(`${p}.*`);
       if (field.type === 'o2m') out.push(...relationPaths(rel.related, `${p}.`, depth - 1));

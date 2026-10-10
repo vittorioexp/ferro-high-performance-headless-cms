@@ -269,6 +269,10 @@ pub struct Field {
     pub required: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub unique: bool,
+    /// Composite uniqueness: with `unique: true`, the *combination* of this column and the listed ones must be unique
+    /// (instead of this column alone). Used by `translations` for "one translation per language per item".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unique_with: Vec<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub indexed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -306,11 +310,21 @@ impl Field {
             FieldType::File => Some(
                 self.relation.as_ref().and_then(|r| r.related.as_deref()).unwrap_or("ferro_files"),
             ),
-            FieldType::M2o | FieldType::O2m | FieldType::M2m | FieldType::M2a => {
+            FieldType::M2o | FieldType::O2m | FieldType::M2m | FieldType::M2a | FieldType::Translations => {
                 self.relation.as_ref().and_then(|r| r.related.as_deref())
             }
             _ => None,
         }
+    }
+
+    /// translations: the m2o field of the translations collection that points to the languages collection.
+    pub fn language_field(&self) -> Option<&str> {
+        self.relation.as_ref().and_then(|r| r.language_field.as_deref())
+    }
+
+    /// translations: the field of the languages collection holding the language code (`it-IT`); default `code`.
+    pub fn language_key(&self) -> &str {
+        self.relation.as_ref().and_then(|r| r.language_key.as_deref()).unwrap_or("code")
     }
 
     pub fn foreign_field(&self) -> Option<&str> {
@@ -347,7 +361,7 @@ impl Field {
             FieldType::Date => "date".into(),
             FieldType::Datetime => "timestamptz".into(),
             FieldType::Time => "time".into(),
-            FieldType::O2m | FieldType::M2m | FieldType::M2a => return None,
+            FieldType::O2m | FieldType::M2m | FieldType::M2a | FieldType::Translations => return None,
         })
     }
 
@@ -389,6 +403,10 @@ pub enum FieldType {
     /// Many-to-any (alias): o2m to the junction `relation.related`, which has an
     /// `m2a_item` field pointing to items of several collections.
     M2a,
+    /// Translations (alias): an o2m to a translations collection (`relation.related`) with one row per language for each
+    /// item. `relation.foreign_field` points back to the item, `relation.language_field` to the languages collection;
+    /// the database guarantees a single translation per language and item. Read with `?lang=`, written by language code.
+    Translations,
     /// Column of an m2a junction: uuid of an item whose collection is stored in the
     /// sibling field `relation.collection_field`.
     M2aItem,
@@ -396,7 +414,7 @@ pub enum FieldType {
 
 impl FieldType {
     pub fn is_alias(self) -> bool {
-        matches!(self, FieldType::O2m | FieldType::M2m | FieldType::M2a)
+        matches!(self, FieldType::O2m | FieldType::M2m | FieldType::M2a | FieldType::Translations)
     }
     pub fn is_m2o_like(self) -> bool {
         matches!(self, FieldType::M2o | FieldType::File)
@@ -426,6 +444,7 @@ impl FieldType {
             FieldType::O2m => "o2m",
             FieldType::M2m => "m2m",
             FieldType::M2a => "m2a",
+            FieldType::Translations => "translations",
             FieldType::M2aItem => "m2a_item",
         }
     }
@@ -448,6 +467,12 @@ pub struct Relation {
     /// m2a_item: collections allowed as targets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed: Vec<String>,
+    /// translations: the m2o field in `related` pointing to the languages collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_field: Option<String>,
+    /// translations: field of the languages collection holding the language code (default `code`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_key: Option<String>,
     /// o2m-like: field in `related` used for manual ordering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_field: Option<String>,

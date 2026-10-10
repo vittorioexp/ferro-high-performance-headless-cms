@@ -169,10 +169,13 @@ function fieldEditor(collection, existing) {
   const relationBox = h('div');
   const extraBox = h('div');
 
-  const isRel = () => ['m2o', 'file', 'o2m', 'm2m', 'm2a', 'm2a_item'].includes(f.type);
+  const isRel = () => ['m2o', 'file', 'o2m', 'm2m', 'm2a', 'translations', 'm2a_item'].includes(f.type);
+  // a new translations field is set up in one go (languages, translations collection, the guarantee); an existing one is edited by hand
+  const guided = () => f.type === 'translations' && !existing;
+  const tx = { fields: [{ name: 'title', type: 'string' }, { name: 'body', type: 'text' }], languages: 'en-US English\nit-IT Italiano', translations_collection: '', languages_collection: '' };
 
   function drawCommon() {
-    const alias = ['o2m', 'm2m', 'm2a'].includes(f.type);
+    const alias = ['o2m', 'm2m', 'm2a', 'translations'].includes(f.type);
     replace(common, 
       alias
         ? h('p', { class: 'muted' }, 'Alias field: it has no column of its own.')
@@ -221,6 +224,33 @@ function fieldEditor(collection, existing) {
     } else if (f.type === 'file') {
       r.related = 'ferro_files';
       parts.push(labeled('On delete of the file', selectEl(ON_DELETE, r.on_delete || 'set_null', (v) => (r.on_delete = v))));
+    } else if (guided()) {
+      const fieldsBox = h('div');
+      const drawFields = () =>
+        replace(
+          fieldsBox,
+          tx.fields.map((tf, i) =>
+            h('div', { class: 'row-inline' }, inputEl(tf.name, (v) => (tf.name = v.trim()), { placeholder: 'field_name' }), selectEl(['string', 'text', 'json', 'integer', 'boolean', 'file'], tf.type, (v) => (tf.type = v)), button('✕', () => (tx.fields.splice(i, 1), drawFields()), 'icon danger')),
+          ),
+          button('+ Add a translatable field', () => (tx.fields.push({ name: '', type: 'string' }), drawFields()), 'sm'),
+        );
+      drawFields();
+      parts.push(
+        h('p', { class: 'muted' }, `This creates, in one step: a translations collection with one row per language and item (the database allows only one), the field here, and the languages collection if it does not exist.`),
+        h('div', { class: 'field' }, h('label', {}, 'Translatable fields'), fieldsBox),
+        labeled('Languages to add (one per line: code, then name)', h('textarea', { rows: 3, class: 'mono', name: 'languages', onInput: (e) => (tx.languages = e.target.value) }, tx.languages), 'e.g. it-IT Italiano. Languages that already exist are left alone.'),
+        h('details', {}, h('summary', {}, 'Collection names'),
+          labeled('Translations collection', inputEl('', (v) => (tx.translations_collection = v.trim()), { placeholder: `${collection.name}_translations` })),
+          labeled('Languages collection', inputEl('', (v) => (tx.languages_collection = v.trim()), { placeholder: 'languages' }))),
+      );
+    } else if (f.type === 'translations') {
+      const child = r.related;
+      parts.push(
+        labeled('Translations collection', selectEl(collectionOptions(), child || '', (v) => ((r.related = v), drawRelation()))),
+        labeled('Field pointing back here', selectEl(fieldNameOptions(child, (x) => x.type === 'm2o' && x.relation?.related === collection.name), r.foreign_field || '', (v) => (r.foreign_field = v))),
+        labeled('Language field', selectEl(fieldNameOptions(child, (x) => x.type === 'm2o' && x.relation?.related !== collection.name), r.language_field || '', (v) => (r.language_field = v)), 'It must be unique together with the field pointing back here (one translation per language).'),
+        labeled('Language code field', inputEl(r.language_key || '', (v) => (r.language_key = v.trim() || undefined), { placeholder: 'code' }), 'The field of the languages collection holding codes such as it-IT.'),
+      );
     } else if (['o2m', 'm2m', 'm2a'].includes(f.type)) {
       const child = r.related;
       parts.push(
@@ -312,7 +342,7 @@ function fieldEditor(collection, existing) {
       delete out._validation;
     }
     if (!isRel() || Object.keys(out.relation).length === 0) delete out.relation;
-    if (['o2m', 'm2m', 'm2a'].includes(out.type)) {
+    if (['o2m', 'm2m', 'm2a', 'translations'].includes(out.type)) {
       delete out.required;
       delete out.unique;
       delete out.indexed;
@@ -345,6 +375,27 @@ function fieldEditor(collection, existing) {
         class: 'primary',
         close: false,
         onClick: async () => {
+          if (guided()) {
+            // not a plain "add field": the whole translations set-up is one schema change (previewed, then applied)
+            if (!f.name) throw new Error('Name is required');
+            const fields = tx.fields.filter((x) => x.name);
+            if (!fields.length) throw new Error('Add at least one translatable field');
+            const languages = tx.languages
+              .split('\n')
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((line) => {
+                const [code, ...name] = line.split(/\s+/);
+                return { code, name: name.join(' ') || code };
+              });
+            const body = { fields, field_name: f.name, languages, ...(tx.translations_collection ? { translations_collection: tx.translations_collection } : {}), ...(tx.languages_collection ? { languages_collection: tx.languages_collection } : {}) };
+            const res = await applyChange(`Make ${collection.name} translatable`, (q) => api.post(`/collections/${encodeURIComponent(collection.name)}/translations`, body, q));
+            if (res) {
+              dlg.close();
+              location.reload();
+            }
+            return;
+          }
           const body = build();
           const path = existing ? `/fields/${encodeURIComponent(collection.name)}/${encodeURIComponent(originalName)}` : `/fields/${encodeURIComponent(collection.name)}`;
           const res = await applyChange(`${existing ? 'Update' : 'Add'} ${collection.name}.${body.name}`, (q) => (existing ? api.patch(path, body, q) : api.post(path, body, q)));

@@ -23,6 +23,6 @@ fields:
     relation: { related: pages_blocks, foreign_field: pages_id, sort_field: sort }
     meta: { interface: list-m2a }
   - name: translations
-    type: o2m
-    relation: { related: pages_translations, foreign_field: pages_id }
+    type: translations
+    relation: { related: pages_translations, foreign_field: pages_id, language_field: languages_code }
     meta: { interface: translations }

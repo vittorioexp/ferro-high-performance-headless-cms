@@ -255,3 +255,80 @@ pub async fn delete_policy(State(st): State<AppState>, Acc(acc): Acc, Path(id): 
     let res = apply(&st, &acc, snap, &q, false).await?;
     Ok(result_json(&res, Value::Null))
 }
+
+#[derive(Debug, Deserialize)]
+pub struct NewLanguage {
+    code: String,
+    name: String,
+    #[serde(default)]
+    direction: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TranslationsBody {
+    /// The translatable fields, as for `POST /fields/:collection` (plain column fields).
+    fields: Vec<Field>,
+    #[serde(default)]
+    field_name: Option<String>,
+    #[serde(default)]
+    translations_collection: Option<String>,
+    #[serde(default)]
+    languages_collection: Option<String>,
+    /// Languages to add to the languages collection (existing codes are left alone).
+    #[serde(default)]
+    languages: Vec<NewLanguage>,
+}
+
+/// `POST /collections/:name/translations` — make a collection translatable in one step: creates the languages collection
+/// (unless it exists), the translations collection with the translatable fields and the one-translation-per-language
+/// guarantee, and the `translations` field. It is one schema change, so `?dry_run=true` previews the plan and SQL.
+pub async fn add_translations(
+    State(st): State<AppState>,
+    Acc(acc): Acc,
+    Path(name): Path<String>,
+    Query(q): Query<ChangeQuery>,
+    Json(body): Json<TranslationsBody>,
+) -> ApiResult<Json<Value>> {
+    acc.require_admin()?;
+    let spec = ferro_core::translations::TranslationsSpec {
+        collection: name.clone(),
+        field_name: body.field_name.clone(),
+        translations_collection: body.translations_collection.clone(),
+        languages_collection: body.languages_collection.clone(),
+        fields: body.fields.clone(),
+    };
+    let names = spec.names();
+    let snap = ferro_core::translations::scaffold(&current(&st), &spec).map_err(|errs| ApiError::bad_request(errs.join("; ")))?;
+    let res = apply(&st, &acc, snap, &q, false).await?;
+    let mut out = result_json(&res, json!({ "field": names.field, "translations_collection": names.translations, "languages_collection": names.languages }));
+
+    // seed the languages (after the schema change, so the collection exists)
+    if res.applied && !body.languages.is_empty() {
+        let ctx = ferro_engine::items::Ctx::new(st.schema.get(), acc.clone());
+        let (mut added, mut skipped) = (vec![], vec![]);
+        for l in &body.languages {
+            let mut tx = st.pool.begin().await?;
+            let exists: bool = sqlx::query_scalar(&format!("SELECT EXISTS (SELECT 1 FROM {} WHERE \"code\" = $1)", ferro_engine::ddl::q(&names.languages)))
+                .bind(&l.code)
+                .fetch_one(&mut *tx)
+                .await?;
+            if exists {
+                skipped.push(json!({ "code": l.code, "reason": "already exists" }));
+                continue;
+            }
+            let mut item = json!({ "code": l.code, "name": l.name });
+            if let Some(d) = &l.direction {
+                item["direction"] = json!(d);
+            }
+            match ferro_engine::items::create_one(&ctx, &mut tx, &names.languages, item).await {
+                Ok(_) => {
+                    tx.commit().await?;
+                    added.push(l.code.clone());
+                }
+                Err(e) => skipped.push(json!({ "code": l.code, "reason": e.to_string() })),
+            }
+        }
+        out.0["meta"]["languages"] = json!({ "added": added, "skipped": skipped });
+    }
+    Ok(out)
+}

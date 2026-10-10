@@ -46,6 +46,7 @@ pub fn router() -> Router<AppState> {
             "/collections/:name",
             get(collections::get_one).patch(collections::update).delete(collections::remove),
         )
+        .route("/collections/:name/translations", post(collections::add_translations))
         .route("/fields/:collection", post(collections::add_field))
         .route("/fields/:collection/:field", patch(collections::update_field).delete(collections::remove_field))
         .route("/roles", get(collections::list_roles))

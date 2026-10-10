@@ -187,8 +187,10 @@ fields: [...]
 | `file` | `uuid` + FK to `ferro_files` | |
 | `m2a_item` | `uuid` + index | column of the M2A junction: `relation.collection_field`, `relation.allowed` |
 | `o2m` / `m2m` / `m2a` | none (alias) | `relation.related` + `relation.foreign_field` |
+| `translations` | none (alias) | an o2m with language support: also `relation.language_field` (and `language_key`), see §4.5 |
 
-Common attributes: `required` (NOT NULL), `unique`, `indexed`, `default` (a
+Common attributes: `required` (NOT NULL), `unique`, `unique_with` (with `unique: true`: the *combination* of this column and
+the listed ones is unique), `indexed`, `default` (a
 literal or `$NOW`), `validation` (a condition using the filter operators, e.g.
 `{ _nempty: true }`), `meta` (interface, options, display, note, width, group,
 translations: used only by the Admin UI).
@@ -227,11 +229,81 @@ fields:
   - { name: sort, type: integer }
 ```
 
-**Translations** use an explicit pattern: a `pages_translations` collection
-(m2o `pages_id`, m2o `languages_code`) and an `o2m` from the parent. There is no
-special type, so diff and migration work as for any other relation.
+### 4.5 Translations
 
-### 4.5 Snapshot validation
+Translated content is a first-class model element, not a convention: the `translations` field type.
+
+```yaml
+# pages.yaml                                       # pages_translations.yaml
+  - name: translations                             name: pages_translations
+    type: translations                             system_fields: false
+    relation:                                      sync: { natural_key: [pages_id, languages_id] }
+      related: pages_translations                  fields:
+      foreign_field: pages_id                        - { name: pages_id, type: m2o, required: true, relation: { related: pages, on_delete: cascade } }
+      language_field: languages_id                   - name: languages_id
+      language_key: code        # default             type: m2o
+                                                      required: true
+# languages.yaml                                      unique: true
+name: languages                                       unique_with: [pages_id]     # one translation per language and page
+sync: { natural_key: [code] }                         relation: { related: languages, on_delete: restrict }
+fields:                                              - { name: title, type: string }
+  - { name: code, type: string, required: true, unique: true }
+  - { name: name, type: string }                     - { name: body, type: text }
+```
+
+It is an alias of the item (no column) pointing at a **translations collection** with one row per language and item. That
+collection holds the translatable fields, an m2o back to the item and an m2o to a **languages collection** (any collection with
+a unique string field holding the language code, `code` unless `language_key` says otherwise).
+
+- **The database guarantees one translation per language and item.** The language field must be `unique` together with the
+  field that points back to the item (`unique_with`, a composite `UNIQUE (languages_id, pages_id)`), and both must be required
+  (a NULL would escape the rule). Snapshot validation refuses a model without it, so two concurrent writes can never leave two
+  German versions of a page: one of them gets `409 RECORD_NOT_UNIQUE`.
+- **Set it up in one step.** `POST /collections/:name/translations` (Admin UI: *Data model → New field → type translations*;
+  `?dry_run=true` previews the plan and the SQL) creates the languages collection if it does not exist (a unique `code`, a
+  `name`, a `direction`), the translations collection with the fields you list and the guarantees above, and the field, as a
+  **single schema change** through the usual plan / apply pipeline. `languages: [{code, name}]` seeds languages that do not
+  exist yet. Names default to `<collection>_translations`, `languages` and `translations`.
+- **Everything else is the existing relational machinery**: nested reads (`fields=translations.*`), filters through the relation
+  (`{"translations": {"_some": {"title": {"_icontains": "ciao"}}}}`), GraphQL as a typed list, permissions (field and row rules
+  on the translations collection), activity and revisions, realtime, data promotion.
+- **Promotion between environments merges per language.** The scaffold declares `(item, language)` as the natural key of a
+  translation, so pushing a page that was translated independently on both sides updates the target's Italian translation
+  instead of colliding with it (see §7.4: natural keys made of references are matched after their parents).
+
+**Reading in a language.** Add `lang` to a read: `GET /items/pages/:id?fields=slug,title,body&lang=it-IT,en-US` (GraphQL: the
+`lang` argument of the query roots). The translatable fields come back directly on the item, each from the **first language of
+the list that has a value for it**, and `_language` says which language answered first:
+
+```json
+{ "slug": "home", "title": "Ciao", "body": "Corpo (the English text would have been used had Italian none)", "_language": "it-IT" }
+```
+
+- A field the item **also has itself** (`title` on both) is *replaced* by the translation when there is one and keeps its own
+  value otherwise: the item's own field is the default language, and no translation means the default. A field that exists only
+  in the translations is `null` when no language of the list has it.
+- `fields=*` with `lang` includes every translatable field; otherwise name them. Without `lang` a translated name is not a field
+  of the item (400), as before.
+- Unknown language codes are skipped, not errors (the answer for an anonymous caller must not depend on which languages exist);
+  at most 8 codes. Items without any translation get `null` (stable shape).
+- Permissions are the translations collection's own: a field the caller may not read comes back `null`, and a caller with no
+  read access to the translations collection simply sees none (no error, nothing leaked). The language list is looked up without
+  needing access to it: only whether a code you typed exists is revealed.
+- Sorting and filtering by a translated *name* is refused; filter through the relation instead (above).
+
+**Writing by language code.** Next to the usual forms (an array replaces the set, `{create, update, delete}` operates on rows) a
+map keyed by language code upserts translations and **leaves the other languages alone**:
+
+```json
+PATCH /items/pages/<id>
+{ "translations": { "it-IT": { "title": "Ciao mondo" }, "fr-FR": { "title": "Bonjour" }, "en-US": null } }
+```
+
+An object creates or updates that language's translation (only the fields you send; the link fields and `id` in it are ignored,
+so a translation cannot be moved), `null` deletes it, an unknown language is a 400 and the whole write rolls back. All of it
+runs in the request's transaction with the caller's permissions.
+
+### 4.6 Snapshot validation
 
 `ferro schema validate` (and every apply) checks: valid identifiers
 (`[A-Za-z_][A-Za-z0-9_]{0,62}`), the reserved `ferro_` prefix, duplicates, `id`
@@ -240,7 +312,10 @@ and system fields not redeclared, consistent relations (existing targets, a
 `junction_field`, M2A with an `m2a_item`, existing `allowed` collections),
 `required` combined with `on_delete: set_null` (incompatible), natural keys on
 column fields, permissions on existing collections/fields, and roles that point
-to existing policies.
+to existing policies. For `translations` fields: an existing languages collection with a
+string code field, an m2o language field that is `unique` together with the field pointing
+back to the item (`unique_with`) and required on both. `unique_with` itself needs
+`unique: true` and other column fields of the same collection (at most 3).
 
 ## 5. Persistence on PostgreSQL
 
@@ -372,7 +447,10 @@ In one transaction with deferred constraints:
 1. format and schema compatibility (errors → nothing is written)
 2. **natural key**: for items whose id does not exist in the target, if an item
    with the same natural key exists the target's id is adopted, and every
-   reference in the bundle (m2o, m2a_item) is rewritten
+   reference in the bundle (m2o, m2a_item) is rewritten. Collections are matched
+   parents first and each match is written into the bundle at once, so a natural key
+   made of references (a translation is "this page in this language") compares the
+   target's ids and recognises the same translation on both sides
 3. references to users that do not exist → `null`
 4. folders, files (the binary must already be in the target's storage)
 5. collections in topological order; for each item:
@@ -424,8 +502,8 @@ Response format `{ "data": …, "meta": … }`, errors
 
 | Method and path | |
 |---|---|
-| `GET /items/:collection` | list (`fields`, `filter`, `sort`, `limit`, `offset`, `page`, `search`, `meta=total_count,filter_count`) |
-| `GET /items/:collection/:id` | single item |
+| `GET /items/:collection` | list (`fields`, `filter`, `sort`, `limit`, `offset`, `page`, `search`, `lang`, `meta=total_count,filter_count`) |
+| `GET /items/:collection/:id` | single item (`fields`, `lang`) |
 | `POST /items/:collection` | create (object or array); singleton: upsert |
 | `PATCH /items/:collection/:id` | update |
 | `PATCH /items/:collection` | batch: `{ keys: [...], data: {...} }` or `[{ id, ... }]` |
@@ -468,7 +546,7 @@ Everything runs in one transaction, with permissions checked at every level.
 |---|---|
 | Auth | `POST /auth/login` `{email,password,otp?}` → `{access_token, refresh_token, expires}` (`OTP_REQUIRED` / `INVALID_OTP` with two-factor), `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/methods` (what the sign-in page may offer) |
 | Account security | `POST /auth/password/request`, `POST /auth/password/reset`, `POST /auth/invite/accept`, `POST /users/invite`, `POST /auth/tfa/generate` · `enable` · `disable`, `DELETE /users/:id/tfa`; single sign-on: `GET /auth/oauth/:name`, `GET /auth/oauth/:name/callback`, `POST /auth/oauth/exchange` (see §9) |
-| Model | `GET/POST /collections`, `GET/PATCH/DELETE /collections/:name`, `POST /fields/:collection`, `PATCH/DELETE /fields/:collection/:field` (query `allow_destructive`, `dry_run`) |
+| Model | `GET/POST /collections`, `GET/PATCH/DELETE /collections/:name`, `POST /collections/:name/translations` (translations set-up, §4.5), `POST /fields/:collection`, `PATCH/DELETE /fields/:collection/:field` (query `allow_destructive`, `dry_run`) |
 | Access | `GET /roles`, `PUT/DELETE /roles/:id`, `GET /policies`, `PUT/DELETE /policies/:id` |
 | Schema | `GET /schema/snapshot` (`?format=yaml`), `POST /schema/plan`, `POST /schema/apply`, `GET /schema/history` |
 | Users | `GET/POST /users`, `GET /users/me`, `GET/PATCH/DELETE /users/:id`, `POST /users/:id/token` |
@@ -512,13 +590,15 @@ mutation {
 
 | Root | Meaning |
 |---|---|
-| `<c>(filter, sort, limit, offset, page, search)` | list (`[<c>!]!`) |
-| `<c>_by_id(id)` · `<c>_count(filter, search)` | single item or `null` · count |
-| `<c>` (singleton) · `update_<c>(data)` | the single item |
+| `<c>(filter, sort, limit, offset, page, search, lang)` | list (`[<c>!]!`) |
+| `<c>_by_id(id, lang)` · `<c>_count(filter, search)` | single item or `null` · count |
+| `<c>(lang)` (singleton) · `update_<c>(data)` | the single item |
 | `create_<c>_item(s)(data)` | creation (nested writes as in REST) |
 | `update_<c>_item(id, data)` · `update_<c>_items(ids, data)` | update |
 | `delete_<c>_item(id)` · `delete_<c>_items(ids)` | delete → `{ id }` / `{ ids }` |
 
+- `lang: "it-IT,en-US"` (only on collections with a `translations` field) resolves the translated fields as in REST (§4.5):
+  they appear on the type, together with `_language`, and can be selected on the query roots that pass `lang`.
 - Types are named after the collection; relations are typed (`category { code }`),
   and M2A fields (`item`) are **unions** of the allowed types, queried with
   `... on <collection>`.
@@ -1070,7 +1150,12 @@ Suggested plan (the **model** converter exists; the **data** converter is on the
    stay declared collections; Directus's four system fields become
    `system_fields: true`; folders and purely visual fields are dropped; every
    dropped or approximated item is printed as a warning, and the result is
-   validated). Roles and permissions are not converted (step 2).
+   validated). Roles and permissions are not converted (step 2). Fields created with
+   Directus's *translations* interface (`special: ["translations"]`) become Ferro
+   **`translations`** fields: the languages primary key (`code`) is kept as a unique,
+   required string and used as the natural key, and the language field of the
+   translations collection is made unique together with the link to the item, which
+   Directus does not guarantee (the converter warns: check your data for duplicates).
 2. **Policies**: export `directus_policies`/`directus_permissions` → Ferro policies
    with new stable UUIDs (done once; from then on they live in git).
 3. **Ids**: for collections with an integer primary key, the Ferro id is the
@@ -1095,9 +1180,9 @@ set; it uses only the public API. To develop against another server:
 | GraphQL | Playground: editor, variables, result, SDL schema download |
 | Automations | Flows: starter templates, trigger and operation editor, plan preview, run history, manual runs |
 | Content | List with search, filters, sorting, pagination, multi-delete; item page with a form **generated from the model** |
-| Form | A widget for every type; M2O pickers with labels; files (upload, pick, preview); inline **O2M** and **M2M** (reordering with a sort field); **M2A blocks** (add/reorder/remove blocks, nested forms up to 3 levels); required-field validation; fields the user cannot read because of permissions are never written back as `null` |
+| Form | A widget for every type; M2O pickers with labels; files (upload, pick, preview); inline **O2M** and **M2M** (reordering with a sort field); **translations** as one tab per language (add / remove a language; saved by language code, so the other languages are never touched); **M2A blocks** (add/reorder/remove blocks, nested forms up to 3 levels); required-field validation; fields the user cannot read because of permissions are never written back as `null` |
 | History | Revisions of an item, with restore of simple fields |
-| Data model | Collections and fields (types, relations, defaults, interface, validation). **Every save first runs a dry run and shows the plan and the SQL**; destructive changes are highlighted and need confirmation |
+| Data model | Collections and fields (types, relations, defaults, interface, validation). **Every save first runs a dry run and shows the plan and the SQL**; destructive changes are highlighted and need confirmation. A new field of type *translations* opens a guided set-up (translatable fields, languages) that creates the whole thing as one previewed change |
 | Access control | Roles and policies with permissions (fields, item filter, validation, presets), with the same plan preview |
 | Files | Library with folders, drag & drop, metadata, binary replacement, download; lists and previews load small cropped thumbnails (`?width=…&height=…&fit=cover`) instead of the originals |
 | Users | Users, roles, status, password, API token generation; **invite by email** (or get the link when Ferro cannot send mail); sign-in method and 2FA columns; remove someone's second factor |
@@ -1143,7 +1228,7 @@ services through `request`); arbitrary Rust code has to be compiled into the bin
 
 ### Implemented
 
-- Complete model (types, M2O/O2M/M2M/M2A/file relations, singletons, system fields,
+- Complete model (types, M2O/O2M/M2M/M2A/file relations, **translations**, singletons, system fields,
   validations), snapshot validation
 - Transactional diff/plan/apply with renames, risk levels, optimistic lock, history,
   multi-instance
@@ -1169,12 +1254,12 @@ services through `request`); arbitrary Rust code has to be compiled into the bin
 ### Known limits
 
 - **State of verification** (2026-10-09): the workspace builds without warnings;
-  108 Rust tests, 46 Admin UI tests, **655 integration checks** over several environments
+  119 Rust tests, 58 Admin UI tests, **734 integration checks** over several environments
   with a real PostgreSQL 16 (schema, sync, flows, GraphQL, security, realtime —
   including two instances on the same database — storage against an
-  S3-compatible server, image transformations checked pixel by pixel, and the identity flows — two-factor, password reset, invitations, single
-  sign-on and LDAP — against a fake SMTP server, a mock OpenID provider and a real LDAP server) and **68 checks in a real browser** (Edge/Chromium; including the reset, invitation, two-factor and single sign-on
-  screens end to end). They run
+  S3-compatible server, image transformations checked pixel by pixel, translations, and the identity flows — two-factor, password reset, invitations, single
+  sign-on and LDAP — against a fake SMTP server, a mock OpenID provider and a real LDAP server) and **79 checks in a real browser** (Edge/Chromium; including the reset, invitation, two-factor, single sign-on and
+  translations screens end to end). They run
   with `scripts/ci.sh [browser]` (GitHub workflow in `.github/workflows/ci.yml`);
   details in `tests/README.md`.
 - Never run: the Docker image, the compose file, the example Jenkinsfile and the first
@@ -1199,6 +1284,12 @@ services through `request`); arbitrary Rust code has to be compiled into the bin
   stop its owner from asking; a locked reset only delays them. Rotating `FERRO_SECRET` without a separate
   `FERRO_ENCRYPTION_KEY` locks every two-factor user out until an administrator resets them.
 - Nested relational filters support m2o and o2m-like relations (not `m2a_item`).
+- **Translations.** `lang` resolves translations on the root of a read only (not inside expanded relations such as
+  `blocks.item.title`, and not on GraphQL nested selections); sorting or filtering by a translated *name* is refused (filter
+  through the `translations` relation); `search` does not look into translations; there is no `Accept-Language` negotiation (the client passes `lang`); fallback is by
+  the codes you list, with no implicit default language other than the item's own fields. The `translations` interface of
+  extensions and GraphQL write paths use the generic nested-write format. A translations field needs a languages collection
+  keyed by a string code; languages themselves are not translated.
 - Query-string filters only in JSON form (`filter={…}`), not in the
   `filter[field][_eq]=` form.
 - Binaries are held in memory during upload/sync (fine up to a few hundred MB per file).

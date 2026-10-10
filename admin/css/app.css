@@ -160,6 +160,13 @@ pre.token { user-select: all; word-break: break-all; white-space: pre-wrap; }
   main { padding: .8rem; }
 }
 
+/* translations editor */
+.tabs { display: flex; flex-wrap: wrap; gap: .3rem; align-items: center; border-bottom: 1px solid var(--border); margin-bottom: .6rem; }
+.tab { border: 1px solid var(--border); border-bottom: none; border-radius: var(--radius) var(--radius) 0 0; background: var(--bg); padding: .35rem .8rem; cursor: pointer; }
+.tab.active { background: var(--panel); font-weight: 600; color: var(--accent); }
+.tabs select.add-language { width: auto; margin-left: auto; }
+.tab-panel { padding: .2rem 0 .6rem; }
+
 /* sign-in extras, account security */
 .login-extras { display: flex; flex-direction: column; gap: .6rem; margin-top: .8rem; align-items: stretch; }
 .forgot-link { font-size: .85rem; text-align: center; }

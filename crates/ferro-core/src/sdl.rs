@@ -41,7 +41,7 @@ fn type_of(f: &Field, known: &BTreeMap<String, bool>, owner: &str) -> String {
             Some(t) if known.contains_key(t) => t.to_string(),
             _ => "String".to_string(),
         },
-        FieldType::O2m | FieldType::M2m | FieldType::M2a => match f.related_collection() {
+        FieldType::O2m | FieldType::M2m | FieldType::M2a | FieldType::Translations => match f.related_collection() {
             Some(t) if known.contains_key(t) => format!("[{t}!]"),
             _ => "[String!]".to_string(),
         },
@@ -76,6 +76,16 @@ pub fn sdl(snapshot: &Snapshot) -> String {
         for f in c.fields.iter().chain(implicit.iter()) {
             let _ = writeln!(out, "  {}: {}", f.name, type_of(f, &known, &c.name));
         }
+        let translated = crate::translations::translated_fields(snapshot, c);
+        if !translated.is_empty() {
+            out.push_str("  # filled when the query passes `lang`: each from the first language that has a value\n");
+            for f in &translated {
+                // relations (a translated image) come back as the related id
+                let ty = if f.ty.is_relational() { "ID".to_string() } else { scalar(f.ty).to_string() };
+                let _ = writeln!(out, "  {}: {ty}", f.name);
+            }
+            out.push_str("  _language: String\n");
+        }
         out.push_str("}\n\n");
         for f in c.fields.iter().filter(|f| f.ty == FieldType::M2aItem) {
             let allowed: Vec<&String> = f
@@ -93,11 +103,13 @@ pub fn sdl(snapshot: &Snapshot) -> String {
     out.push_str("type Query {\n");
     for (c, _) in &collections {
         let n = &c.name;
+        let has_lang = c.fields.iter().any(|f| f.ty == FieldType::Translations);
+        let lang = if has_lang { ", lang: String" } else { "" };
         if c.meta.singleton {
-            let _ = writeln!(out, "  {n}: {n}");
+            let _ = writeln!(out, "  {n}{}: {n}", if has_lang { "(lang: String)" } else { "" });
         } else {
-            let _ = writeln!(out, "  {n}(filter: JSON, sort: [String], limit: Int, offset: Int, page: Int, search: String): [{n}!]!");
-            let _ = writeln!(out, "  {n}_by_id(id: ID!): {n}");
+            let _ = writeln!(out, "  {n}(filter: JSON, sort: [String], limit: Int, offset: Int, page: Int, search: String{lang}): [{n}!]!");
+            let _ = writeln!(out, "  {n}_by_id(id: ID!{lang}): {n}");
             let _ = writeln!(out, "  {n}_count(filter: JSON, search: String): Int!");
         }
     }

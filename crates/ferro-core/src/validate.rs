@@ -50,6 +50,31 @@ pub fn validate_snapshot(s: &Snapshot) -> Vec<String> {
             if f.ty.is_m2o_like() && f.required && f.on_delete() == OnDelete::SetNull {
                 errors.push(format!("{fctx}: required m2o cannot use on_delete: set_null (use cascade or restrict)"));
             }
+            if !f.unique_with.is_empty() {
+                if !f.unique || !f.has_column() {
+                    errors.push(format!("{fctx}: unique_with needs `unique: true` on a column field"));
+                }
+                if f.unique_with.len() > 3 {
+                    errors.push(format!("{fctx}: unique_with takes at most 3 other fields"));
+                }
+                let mut seen = BTreeSet::new();
+                for other in &f.unique_with {
+                    match c.field(other) {
+                        Some(o) if o.has_column() && o.name != f.name => {}
+                        _ => errors.push(format!("{fctx}: unique_with field `{other}` must be another column field of `{}`", c.name)),
+                    }
+                    if !seen.insert(other.as_str()) {
+                        errors.push(format!("{fctx}: unique_with lists `{other}` twice"));
+                    }
+                }
+            }
+            if f.ty != FieldType::Translations {
+                if let Some(r) = &f.relation {
+                    if r.language_field.is_some() || r.language_key.is_some() {
+                        errors.push(format!("{fctx}: language_field / language_key only apply to translations fields"));
+                    }
+                }
+            }
             validate_relation(c, f, s, &system, &fctx, &mut errors);
         }
 
@@ -143,7 +168,7 @@ fn validate_relation(
                 errors.push(format!("{fctx}: related collection `{related}` does not exist"));
             }
         }
-        FieldType::O2m | FieldType::M2m | FieldType::M2a => {
+        FieldType::O2m | FieldType::M2m | FieldType::M2a | FieldType::Translations => {
             let Some(related_name) = f.related_collection() else {
                 errors.push(format!("{fctx}: {} requires relation.related", f.ty.as_str()));
                 return;
@@ -179,6 +204,9 @@ fn validate_relation(
             if f.ty == FieldType::M2a && !related.fields.iter().any(|x| x.ty == FieldType::M2aItem) {
                 errors.push(format!("{fctx}: junction `{related_name}` has no m2a_item field"));
             }
+            if f.ty == FieldType::Translations {
+                validate_translations(f, related, related_name, &lookup, &fctx, errors);
+            }
         }
         FieldType::M2aItem => {
             let Some(r) = rel else {
@@ -202,6 +230,54 @@ fn validate_relation(
             if rel.is_some() {
                 errors.push(format!("{fctx}: `relation` only allowed on relational fields"));
             }
+        }
+    }
+}
+
+/// The extra rules of a `translations` field: where the languages live and the one-translation-per-language guarantee.
+fn validate_translations<'a>(
+    f: &Field,
+    related: &Collection,
+    related_name: &str,
+    lookup: &dyn Fn(&str) -> Option<&'a Collection>,
+    fctx: &str,
+    errors: &mut Vec<String>,
+) {
+    let Some(lf_name) = f.language_field() else {
+        errors.push(format!("{fctx}: translations requires relation.language_field (the m2o of `{related_name}` that points to the languages collection)"));
+        return;
+    };
+    let Some(lf) = related.field(lf_name) else {
+        errors.push(format!("{fctx}: language_field `{related_name}.{lf_name}` does not exist"));
+        return;
+    };
+    if lf.ty != FieldType::M2o {
+        errors.push(format!("{fctx}: language_field `{related_name}.{lf_name}` must be an m2o field"));
+        return;
+    }
+    let ff = f.foreign_field().unwrap_or_default();
+    if lf_name == ff {
+        errors.push(format!("{fctx}: language_field and foreign_field must be different fields"));
+        return;
+    }
+    let Some(languages_name) = lf.related_collection() else { return };
+    match lookup(languages_name) {
+        None => errors.push(format!("{fctx}: the languages collection `{languages_name}` does not exist")),
+        Some(languages) => {
+            let key = f.language_key();
+            match languages.field(key) {
+                Some(k) if k.ty.is_textual() => {}
+                _ => errors.push(format!("{fctx}: the languages collection `{languages_name}` needs a string field `{key}` (the language code); set relation.language_key to use another")),
+            }
+        }
+    }
+    // one translation per language and item, enforced by the database
+    if !(lf.unique && lf.unique_with.iter().any(|u| u == ff)) {
+        errors.push(format!("{fctx}: `{related_name}.{lf_name}` must be `unique: true` with `unique_with: [{ff}]` (one translation per language and item)"));
+    }
+    for (name, why) in [(lf_name, "language"), (ff, "parent")] {
+        if related.field(name).map(|x| !x.required).unwrap_or(false) {
+            errors.push(format!("{fctx}: the {why} field `{related_name}.{name}` must be required (a NULL would escape the uniqueness rule)"));
         }
     }
 }

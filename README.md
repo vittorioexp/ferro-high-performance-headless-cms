@@ -26,6 +26,9 @@ data model, permissions and content between environments** (dev → test → pro
   Keycloak…; PKCE, verified ID tokens), **LDAP / Active Directory** login, **two-factor authentication** (TOTP with recovery
   codes), **password reset by email** and **invitations** — all configured with environment variables (`FERRO_AUTH_*`,
   `FERRO_LDAP_*`, `FERRO_SMTP_*`, see the docs).
+- **Translations as a model element**: the `translations` field type, a one-step set-up (languages + translations collection +
+  the guarantee of one translation per language and item, enforced by the database), `?lang=it-IT,en-US` reads with a per-field
+  fallback chain (REST and GraphQL), writes by language code, one tab per language in the Admin UI.
 - **GraphQL** with the same permissions (`POST /graphql`, SDL schema at `/graphql/schema`):
   typed relations, M2A blocks as unions (`... on block_text`), transactional mutations.
 
@@ -97,7 +100,7 @@ cargo test                # unit tests of the crates (no database needed)
 (cd admin && node --test test/*.test.mjs)   # Admin UI tests (Node >= 20)
 ```
 
-> Status: builds without warnings; 108 Rust tests + 46 Admin UI tests + 655 integration
-> checks + 68 browser checks, run end to end against PostgreSQL 16 with two environments,
+> Status: builds without warnings; 119 Rust tests + 58 Admin UI tests + 734 integration
+> checks + 79 browser checks, run end to end against PostgreSQL 16 with two environments,
 > an S3-compatible server and a real browser (see "Known limits" in
 > docs/ARCHITECTURE.md). The CI workflow is written but has not yet run on a real runner.

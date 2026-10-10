@@ -38,6 +38,11 @@ pub fn ix_name(table: &str, col: &str) -> String {
 fn wants_fk(f: &Field) -> bool {
     f.ty.is_m2o_like() && f.related_collection().is_some()
 }
+/// `"col"` or `"col", "other", ...` for a composite unique constraint.
+fn unique_columns(f: &Field) -> String {
+    std::iter::once(&f.name).chain(f.unique_with.iter()).map(|c| q(c)).collect::<Vec<_>>().join(", ")
+}
+
 fn wants_unique(f: &Field) -> bool {
     f.has_column() && f.unique
 }
@@ -96,7 +101,7 @@ fn add_constraints(table: &str, f: &Field, out: &mut Vec<String>) {
             "ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({})",
             q(table),
             q(&uq_name(table, &f.name)),
-            q(&f.name)
+            unique_columns(f)
         ));
     }
     if wants_index(f) {
@@ -283,7 +288,7 @@ fn alter_field(p: &mut Phases, table: &str, before: &Field, after: &Field) {
     let fk_changed = wants_fk(before) != wants_fk(after)
         || (wants_fk(after) && (before.related_collection() != after.related_collection() || before.on_delete() != after.on_delete()))
         || type_changed;
-    let uq_changed = wants_unique(before) != wants_unique(after);
+    let uq_changed = wants_unique(before) != wants_unique(after) || (wants_unique(after) && before.unique_with != after.unique_with);
     let ix_changed = wants_index(before) != wants_index(after);
 
     drop_constraints(table, before, fk_changed, uq_changed, ix_changed, &mut p.drop_constraints);
@@ -312,8 +317,9 @@ fn alter_field(p: &mut Phases, table: &str, before: &Field, after: &Field) {
     }
     if uq_changed && wants_unique(after) {
         p.add_constraints.push(format!(
-            "ALTER TABLE {t} ADD CONSTRAINT {} UNIQUE ({col})",
-            q(&uq_name(table, &after.name))
+            "ALTER TABLE {t} ADD CONSTRAINT {} UNIQUE ({})",
+            q(&uq_name(table, &after.name)),
+            unique_columns(after)
         ));
     }
     if ix_changed && wants_index(after) {
@@ -362,5 +368,27 @@ mod tests {
             uq_name("b", "code"),
             uq_name("b", "key")
         )));
+    }
+
+    #[test]
+    fn translations_get_a_composite_unique_constraint_and_no_column_of_their_own() {
+        use ferro_core::translations::{scaffold, TranslationsSpec};
+        let base: Snapshot = serde_yaml::from_str("collections:
+  - name: pages
+    fields:
+      - { name: slug, type: string }
+").unwrap();
+        let spec = TranslationsSpec { collection: "pages".into(), fields: vec![Field::new("title", FieldType::String)], ..Default::default() };
+        let des = scaffold(&base, &spec).unwrap();
+        let sql = plan_to_sql(&diff(&base, &des), &base).unwrap();
+        let name = uq_name("pages_translations", "languages_id");
+        assert!(sql.iter().any(|s| s.contains(&format!("ADD CONSTRAINT \"{name}\" UNIQUE (\"languages_id\", \"pages_id\")"))), "{sql:#?}");
+        assert!(!sql.iter().any(|s| s.contains("\"translations\"") && s.contains("ADD COLUMN")), "the alias has no column");
+        // turning the composite into a plain unique (or back) swaps the constraint
+        let mut plain = des.clone();
+        plain.collection_mut("pages_translations").unwrap().fields.iter_mut().find(|f| f.name == "languages_id").unwrap().unique_with.clear();
+        let change = plan_to_sql(&diff(&des, &plain), &des).unwrap();
+        assert!(change.iter().any(|s| s.contains(&format!("DROP CONSTRAINT IF EXISTS \"{name}\""))), "{change:#?}");
+        assert!(change.iter().any(|s| s.contains(&format!("ADD CONSTRAINT \"{name}\" UNIQUE (\"languages_id\")"))), "{change:#?}");
     }
 }

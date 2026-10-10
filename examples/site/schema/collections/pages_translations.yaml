@@ -8,6 +8,8 @@ fields:
   - name: languages_code
     type: m2o
     required: true
+    unique: true
+    unique_with: [pages_id]      # one translation per language and page, guaranteed by the database
     relation: { related: languages, on_delete: restrict }
   - { name: title, type: string }
   - { name: summary, type: text }

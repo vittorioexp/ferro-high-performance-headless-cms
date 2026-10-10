@@ -272,14 +272,33 @@ fn list_args(f: &FieldNode, vars: &Map<String, Value>, opts: &Options, tree: Fie
     Ok(ReadArgs { fields: tree, filter, sort, limit, offset, search, lenient: false })
 }
 
+/// `lang: "it-IT,en-US"` on a query root, when given.
+fn lang_arg(f: &FieldNode, vars: &Map<String, Value>) -> Result<Option<Vec<String>>> {
+    match f.arg("lang", vars).map_err(inv)? {
+        Some(Value::String(s)) if !s.trim().is_empty() => Ok(Some(crate::translations::parse_languages(&s)?)),
+        _ => Ok(None),
+    }
+}
+
+async fn read_rows(ctx: &Ctx, conn: &mut PgConnection, coll: &str, args: ReadArgs, langs: Option<&[String]>) -> Result<Vec<Value>> {
+    match langs {
+        Some(l) => crate::translations::read_translated(ctx, conn, coll, args, l).await,
+        None => items::read_many(ctx, conn, coll, args).await,
+    }
+}
+
 async fn read_by_id(ctx: &Ctx, conn: &mut PgConnection, coll: &str, id: Uuid, tree: FieldTree) -> Result<Option<Value>> {
+    read_by_id_in(ctx, conn, coll, id, tree, None).await
+}
+
+async fn read_by_id_in(ctx: &Ctx, conn: &mut PgConnection, coll: &str, id: Uuid, tree: FieldTree, langs: Option<&[String]>) -> Result<Option<Value>> {
     let args = ReadArgs {
         fields: tree,
         filter: Some(json!({ "id": { "_eq": id.to_string() } })),
         limit: Some(1),
         ..Default::default()
     };
-    Ok(items::read_many(ctx, conn, coll, args).await?.into_iter().next())
+    Ok(read_rows(ctx, conn, coll, args, langs).await?.into_iter().next())
 }
 
 /// Read the item after a write; callers without read access still get its id.
@@ -335,13 +354,15 @@ async fn run_root(
     if needs_selection && f.selection.is_empty() {
         return Err(FerroError::invalid(format!("Field \"{}\" must have a selection of subfields", f.name)));
     }
-    let tree = if needs_selection { build_tree(&ctx.schema, coll, &sub, doc, vars, true)? } else { FieldTree::default() };
+    // translated fields (and `_language`) exist on query roots read with `lang`
+    let langs = if matches!(op, Op::List | Op::ById | Op::Singleton) { lang_arg(f, vars)? } else { None };
+    let tree = if needs_selection { build_tree(&ctx.schema, coll, &sub, doc, vars, true, langs.is_some())? } else { FieldTree::default() };
     let schema = &ctx.schema;
 
     match op {
         Op::List => {
             let args = list_args(f, vars, opts, tree)?;
-            let rows = items::read_many(ctx, conn, coll, args).await?;
+            let rows = read_rows(ctx, conn, coll, args, langs.as_deref()).await?;
             let out = rows.iter().map(|r| project(schema, coll, r, &sub, doc, vars)).collect::<Result<Vec<_>>>()?;
             Ok(Value::Array(out))
         }
@@ -353,14 +374,14 @@ async fn run_root(
         }
         Op::ById => {
             let id = id_arg(f, vars)?;
-            match read_by_id(ctx, conn, coll, id, tree).await? {
+            match read_by_id_in(ctx, conn, coll, id, tree, langs.as_deref()).await? {
                 Some(row) => project(schema, coll, &row, &sub, doc, vars),
                 None => Ok(Value::Null),
             }
         }
         Op::Singleton => {
             let args = ReadArgs { fields: tree, limit: Some(1), ..Default::default() };
-            match items::read_many(ctx, conn, coll, args).await?.into_iter().next() {
+            match read_rows(ctx, conn, coll, args, langs.as_deref()).await?.into_iter().next() {
                 Some(row) => project(schema, coll, &row, &sub, doc, vars),
                 None => Ok(Value::Null),
             }
@@ -442,7 +463,7 @@ fn targets(def: &Field) -> Vec<String> {
 }
 
 /// What the item engine must load to answer `fields` on `coll`.
-fn build_tree(schema: &Schema, coll: &str, fields: &[&FieldNode], doc: &Document, vars: &Map<String, Value>, strict: bool) -> Result<FieldTree> {
+fn build_tree(schema: &Schema, coll: &str, fields: &[&FieldNode], doc: &Document, vars: &Map<String, Value>, strict: bool, translated_ok: bool) -> Result<FieldTree> {
     let info = schema.collection(coll)?;
     let mut tree = FieldTree::default();
     for f in fields {
@@ -450,6 +471,13 @@ fn build_tree(schema: &Schema, coll: &str, fields: &[&FieldNode], doc: &Document
             continue;
         }
         let Some(def) = info.field(&f.name) else {
+            // translated fields exist on the root of a query that passes `lang`; the engine fills them (and `_language`)
+            if translated_ok && (f.name == crate::translations::LANGUAGE_KEY || ferro_core::translations::translated_fields(&schema.snapshot, &info.def).iter().any(|t| t.name == f.name)) {
+                if f.name != crate::translations::LANGUAGE_KEY {
+                    tree.fields.insert(f.name.clone());
+                }
+                continue;
+            }
             if strict {
                 return Err(FerroError::invalid(format!("Cannot query field \"{}\" on type \"{coll}\"", f.name)));
             }
@@ -464,7 +492,7 @@ fn build_tree(schema: &Schema, coll: &str, fields: &[&FieldNode], doc: &Document
                 }
                 let mut sub: Vec<&FieldNode> = Vec::new();
                 collect_fields(&f.selection, doc, vars, Some(&t), &mut sub, 0).map_err(inv)?;
-                child = child.merged(&build_tree(schema, &t, &sub, doc, vars, strict && !union)?);
+                child = child.merged(&build_tree(schema, &t, &sub, doc, vars, strict && !union, false)?);
             }
             let merged = match tree.children.get(&f.name) {
                 Some(existing) => existing.merged(&child),
@@ -569,7 +597,7 @@ mod tests {
         let schema = schema();
         let doc = parse_document(QUERY).unwrap();
         let sub = root_fields(&doc);
-        let tree = build_tree(&schema, "pages", &sub, &doc, &Map::new(), true).unwrap();
+        let tree = build_tree(&schema, "pages", &sub, &doc, &Map::new(), true, false).unwrap();
         assert!(tree.fields.contains("title") && tree.fields.contains("id"));
         assert!(!tree.fields.contains("blocks"), "relations are loaded through children");
         assert_eq!(tree.children["category"].fields.iter().collect::<Vec<_>>(), vec!["code"]);
@@ -584,7 +612,7 @@ mod tests {
         let schema = schema();
         let doc = parse_document("{ pages { title nope } }").unwrap();
         let sub = root_fields(&doc);
-        let err = build_tree(&schema, "pages", &sub, &doc, &Map::new(), true).unwrap_err();
+        let err = build_tree(&schema, "pages", &sub, &doc, &Map::new(), true, false).unwrap_err();
         assert!(err.to_string().contains("Cannot query field \"nope\" on type \"pages\""), "{err}");
     }
 

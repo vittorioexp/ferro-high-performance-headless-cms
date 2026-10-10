@@ -139,6 +139,10 @@ pub fn convert(src: &Value) -> Result<Converted, String> {
     let mut built: BTreeMap<String, Collection> = BTreeMap::new();
     // alias fields not (yet) bound to a relation -> silent when purely presentational
     let mut aliases: BTreeMap<(String, String), bool> = BTreeMap::new();
+    // alias fields Directus created with the "translations" interface (`special: ["translations"]`)
+    let mut translation_aliases: BTreeSet<(String, String)> = BTreeSet::new();
+    // collections whose primary key is a string other than `id` (Directus `languages` uses `code`): kept as a unique field
+    let mut pk_names: BTreeMap<String, String> = BTreeMap::new();
 
     // ---- collections and plain fields -------------------------------------
     for c in cols {
@@ -161,16 +165,23 @@ pub fn convert(src: &Value) -> Result<Converted, String> {
             let Some(fname) = s(f, "field") else { continue };
             let schema = f.get("schema").unwrap_or(&null);
             let meta = f.get("meta").unwrap_or(&null);
-            if b(schema, "is_primary_key") {
-                if fname != "id" {
-                    warnings.push(format!("{name}.{fname}: primary key not named `id` is skipped (Ferro uses an implicit uuid `id`)"));
+            let tname = s(f, "type").unwrap_or_default();
+            let is_pk = b(schema, "is_primary_key");
+            if is_pk {
+                if fname == "id" {
+                    continue;
                 }
-                continue;
+                if !matches!(map_type(&tname), Some(FieldType::String | FieldType::Text)) {
+                    warnings.push(format!("{name}.{fname}: primary key not named `id` is skipped (Ferro uses an implicit uuid `id`)"));
+                    continue;
+                }
+                // a text key (languages.code, ...) carries meaning: keep it as a unique required field and use it to match items
+                warnings.push(format!("{name}.{fname}: the primary key is kept as a unique, required string field and used as the natural key (Ferro's primary key is an implicit uuid `id`; references are converted to it)"));
+                pk_names.insert(name.clone(), fname.clone());
             }
             if col.system_fields && SYSTEM_FIELDS.contains(&fname.as_str()) {
                 continue;
             }
-            let tname = s(f, "type").unwrap_or_default();
             let ty = match map_type(&tname) {
                 Some(t) => t,
                 None => {
@@ -180,6 +191,9 @@ pub fn convert(src: &Value) -> Result<Converted, String> {
             };
             let mut fld = Field::new(fname.clone(), ty);
             fld.meta = field_meta(meta);
+            if ty == FieldType::O2m && meta.get("special").and_then(|v| v.as_array()).map(|a| a.iter().any(|x| x.as_str() == Some("translations"))).unwrap_or(false) {
+                translation_aliases.insert((name.clone(), fname.clone()));
+            }
             if ty == FieldType::O2m {
                 let iface = fld.meta.interface.clone().unwrap_or_default();
                 let silent = iface.starts_with("presentation-") || iface.starts_with("group-");
@@ -187,6 +201,11 @@ pub fn convert(src: &Value) -> Result<Converted, String> {
             } else {
                 fld.required = schema.get("is_nullable").and_then(|v| v.as_bool()) == Some(false) || b(meta, "required");
                 fld.unique = b(schema, "is_unique");
+                if is_pk {
+                    fld.required = true;
+                    fld.unique = true;
+                    col.sync.natural_key = vec![fname.clone()];
+                }
                 if ty == FieldType::String {
                     fld.max_length = schema.get("max_length").and_then(|v| v.as_u64()).map(|n| n as u32);
                 }
@@ -278,8 +297,10 @@ pub fn convert(src: &Value) -> Result<Converted, String> {
         }
         let Some(pcol) = built.get_mut(&parent) else { continue };
         let junction = s(meta, "junction_field");
+        let is_translations = junction.is_some() && translation_aliases.contains(&(parent.clone(), alias.clone()));
         let ty = match &junction {
             None => FieldType::O2m,
+            Some(_) if is_translations => FieldType::Translations,
             Some(j) => {
                 let far_is_m2a = relations.iter().any(|o| {
                     s(o, "collection").as_deref() == Some(child.as_str())
@@ -300,12 +321,42 @@ pub fn convert(src: &Value) -> Result<Converted, String> {
         f.default = None;
         f.relation = Some(Relation {
             related: Some(child.clone()),
-            foreign_field: Some(cfield),
-            junction_field: if ty == FieldType::M2m { junction } else { None },
+            foreign_field: Some(cfield.clone()),
+            junction_field: if ty == FieldType::M2m { junction.clone() } else { None },
+            language_field: if is_translations { junction.clone() } else { None },
             sort_field: s(meta, "sort_field"),
             ..Default::default()
         });
         aliases.remove(&(parent.clone(), alias.clone()));
+
+        // Ferro enforces "one translation per language and item" in the database, and a NULL would escape that rule
+        if let (true, Some(lang_field), Some(ccol)) = (is_translations, junction, built.get_mut(&child)) {
+            let language_collection = ccol.field(&lang_field).and_then(|x| x.related_collection()).map(String::from);
+            if let Some(x) = ccol.fields.iter_mut().find(|x| x.name == cfield) {
+                x.required = true;
+                if x.on_delete() == OnDelete::SetNull {
+                    x.relation.get_or_insert_with(Relation::default).on_delete = OnDelete::Cascade;
+                }
+            }
+            if let Some(x) = ccol.fields.iter_mut().find(|x| x.name == lang_field) {
+                x.required = true;
+                x.unique = true;
+                x.unique_with = vec![cfield.clone()];
+                if x.on_delete() == OnDelete::SetNull {
+                    x.relation.get_or_insert_with(Relation::default).on_delete = OnDelete::Restrict;
+                }
+            }
+            warnings.push(format!(
+                "{parent}.{alias}: converted to a translations field; {child}.{lang_field} is now required and unique together with {child}.{cfield} (one translation per language and item): check the data for duplicates before importing it"
+            ));
+            if let Some(key) = language_collection.and_then(|l| pk_names.get(&l).cloned()) {
+                if key != "code" {
+                    if let Some(rel) = built.get_mut(&parent).and_then(|p| p.fields.iter_mut().find(|x| x.name == alias)).and_then(|x| x.relation.as_mut()) {
+                        rel.language_key = Some(key);
+                    }
+                }
+            }
+        }
     }
 
     // ---- aliases without a relation (dividers, notices, groups) ----------
@@ -430,6 +481,78 @@ mod tests {
         assert_eq!(pages_id.on_delete(), OnDelete::Cascade);
 
         assert!(snap.role(ADMIN_ROLE_ID).is_some());
+    }
+
+    #[test]
+    fn translations_fields_become_the_dedicated_type() {
+        let src = json!({
+            "collections": [
+                { "collection": "pages", "meta": null, "schema": {} },
+                { "collection": "pages_translations", "meta": { "hidden": true }, "schema": {} },
+                { "collection": "languages", "meta": null, "schema": {} }
+            ],
+            "fields": [
+                { "collection": "pages", "field": "id", "type": "integer", "schema": pk() },
+                { "collection": "pages", "field": "slug", "type": "string", "schema": {} },
+                { "collection": "pages", "field": "translations", "type": "alias", "meta": { "special": ["translations"], "interface": "translations" } },
+                { "collection": "pages_translations", "field": "id", "type": "integer", "schema": pk() },
+                { "collection": "pages_translations", "field": "pages_id", "type": "integer", "schema": {} },
+                { "collection": "pages_translations", "field": "languages_code", "type": "string", "schema": {} },
+                { "collection": "pages_translations", "field": "title", "type": "string", "schema": {} },
+                { "collection": "languages", "field": "code", "type": "string", "schema": { "is_primary_key": true, "max_length": 255 } },
+                { "collection": "languages", "field": "name", "type": "string", "schema": {} }
+            ],
+            "relations": [
+                { "collection": "pages_translations", "field": "pages_id", "related_collection": "pages",
+                  "meta": { "one_field": "translations", "junction_field": "languages_code" }, "schema": { "on_delete": "SET NULL" } },
+                { "collection": "pages_translations", "field": "languages_code", "related_collection": "languages",
+                  "meta": { "one_field": null, "junction_field": "pages_id" }, "schema": { "on_delete": "SET NULL" } }
+            ]
+        });
+        let out = convert(&src).unwrap();
+        let bad: Vec<_> = out.warnings.iter().filter(|w| w.starts_with("validation:")).collect();
+        assert!(bad.is_empty(), "{bad:#?}");
+        let snap = &out.snapshot;
+        let alias = snap.collection("pages").unwrap().field("translations").unwrap();
+        assert_eq!((alias.ty, alias.related_collection(), alias.foreign_field(), alias.language_field(), alias.language_key()), (FieldType::Translations, Some("pages_translations"), Some("pages_id"), Some("languages_code"), "code"));
+        let tc = snap.collection("pages_translations").unwrap();
+        let lf = tc.field("languages_code").unwrap();
+        assert!(lf.unique && lf.required && lf.unique_with == vec!["pages_id"], "{lf:?}");
+        assert!(tc.field("pages_id").unwrap().required);
+        assert_eq!(tc.field("pages_id").unwrap().on_delete(), OnDelete::Cascade, "a required link cannot be SET NULL");
+        let langs = snap.collection("languages").unwrap();
+        let code = langs.field("code").unwrap();
+        assert!(code.required && code.unique, "the text primary key is kept");
+        assert_eq!(langs.sync.natural_key, vec!["code"]);
+        assert!(out.warnings.iter().any(|w| w.contains("languages.code") && w.contains("primary key is kept")));
+        assert!(out.warnings.iter().any(|w| w.contains("one translation per language and item")));
+    }
+
+    #[test]
+    fn a_languages_collection_keyed_by_another_name_sets_language_key() {
+        let src = json!({
+            "collections": [
+                { "collection": "pages", "meta": null, "schema": {} },
+                { "collection": "pages_translations", "meta": null, "schema": {} },
+                { "collection": "languages", "meta": null, "schema": {} }
+            ],
+            "fields": [
+                { "collection": "pages", "field": "id", "type": "integer", "schema": pk() },
+                { "collection": "pages", "field": "t", "type": "alias", "meta": { "special": ["translations"] } },
+                { "collection": "pages_translations", "field": "id", "type": "integer", "schema": pk() },
+                { "collection": "pages_translations", "field": "pages_id", "type": "integer", "schema": {} },
+                { "collection": "pages_translations", "field": "lang", "type": "string", "schema": {} },
+                { "collection": "languages", "field": "iso", "type": "string", "schema": { "is_primary_key": true } }
+            ],
+            "relations": [
+                { "collection": "pages_translations", "field": "pages_id", "related_collection": "pages", "meta": { "one_field": "t", "junction_field": "lang" } },
+                { "collection": "pages_translations", "field": "lang", "related_collection": "languages", "meta": { "junction_field": "pages_id" } }
+            ]
+        });
+        let out = convert(&src).unwrap();
+        assert!(out.warnings.iter().all(|w| !w.starts_with("validation:")), "{:#?}", out.warnings);
+        let alias = out.snapshot.collection("pages").unwrap().field("t").unwrap();
+        assert_eq!((alias.ty, alias.language_key()), (FieldType::Translations, "iso"));
     }
 
     #[test]

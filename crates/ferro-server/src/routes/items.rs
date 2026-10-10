@@ -25,6 +25,20 @@ pub struct ItemsQuery {
     pub search: Option<String>,
     /// `total_count`, `filter_count` or `*`
     pub meta: Option<String>,
+    /// Language preference, e.g. `it-IT,en-US`: the translatable fields of collections with a `translations` field are
+    /// returned on the item, each from the first language that has a value (see docs, "Translations").
+    pub lang: Option<String>,
+}
+
+/// Read rows, resolving translations when `lang` was asked for.
+pub async fn read_rows(ctx: &Ctx, conn: &mut sqlx::PgConnection, collection: &str, args: ReadArgs, lang: Option<&str>) -> ApiResult<Vec<Value>> {
+    match lang.map(str::trim).filter(|l| !l.is_empty()) {
+        None => Ok(items::read_many(ctx, conn, collection, args).await?),
+        Some(l) => {
+            let langs = ferro_engine::translations::parse_languages(l)?;
+            Ok(ferro_engine::translations::read_translated(ctx, conn, collection, args, &langs).await?)
+        }
+    }
 }
 
 pub fn field_tree(fields: Option<&str>) -> FieldTree {
@@ -73,13 +87,13 @@ pub async fn list_collection(st: &AppState, acc: Accountability, collection: &st
     let mut conn = st.pool.acquire().await?;
     if info.def.meta.singleton {
         let args = ReadArgs { fields: field_tree(q.fields.as_deref()), limit: Some(1), ..Default::default() };
-        let rows = items::read_many(&ctx, &mut conn, collection, args).await?;
+        let rows = read_rows(&ctx, &mut conn, collection, args, q.lang.as_deref()).await?;
         return Ok(Json(json!({ "data": rows.into_iter().next().unwrap_or(Value::Null) })));
     }
     let args = read_args(q, st.config.query_limit_max)?;
     let filter = args.filter.clone();
     let search = args.search.clone();
-    let rows = items::read_many(&ctx, &mut conn, collection, args).await?;
+    let rows = read_rows(&ctx, &mut conn, collection, args, q.lang.as_deref()).await?;
     let mut body = json!({ "data": rows });
     if let Some(meta) = q.meta.as_deref() {
         let mut m = serde_json::Map::new();
@@ -123,6 +137,15 @@ pub async fn get_one(
 ) -> ApiResult<Json<Value>> {
     let ctx = ctx(&st, acc);
     let mut conn = st.pool.acquire().await?;
+    if q.lang.as_deref().map(|l| !l.trim().is_empty()).unwrap_or(false) {
+        Uuid::parse_str(&id).map_err(|_| ApiError::bad_request(format!("`{id}` is not a valid id")))?;
+        let args = ReadArgs { fields: field_tree(q.fields.as_deref()), filter: Some(json!({ "id": { "_eq": id } })), limit: Some(1), ..Default::default() };
+        let mut rows = read_rows(&ctx, &mut conn, &collection, args, q.lang.as_deref()).await?;
+        if rows.is_empty() {
+            return Err(FerroError::not_found(format!("item `{id}` not found in `{collection}`")).into());
+        }
+        return Ok(Json(json!({ "data": rows.remove(0) })));
+    }
     let item = items::read_one(&ctx, &mut conn, &collection, &id, field_tree(q.fields.as_deref())).await?;
     Ok(Json(json!({ "data": item })))
 }

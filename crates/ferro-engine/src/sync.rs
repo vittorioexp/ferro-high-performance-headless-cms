@@ -532,17 +532,22 @@ pub async fn import(
 async fn run_import(conn: &mut PgConnection, imp: &mut Importer<'_>, storage: &dyn Storage, bundle: &mut Bundle) -> Result<()> {
     let schema = imp.schema;
 
-    // 2. natural key remapping (target id wins)
+    // 2. natural key remapping (target id wins). Parents are matched before their children and each collection's remapped
+    //    ids are written into the bundle at once: a natural key made of references (a translation is "this page in this
+    //    language") then compares the *target's* ids, so the same translation on both sides is recognised as one.
     let mut remap: BTreeMap<String, BTreeMap<Uuid, Uuid>> = BTreeMap::new();
-    for (coll, list) in bundle.items.iter_mut() {
-        let info = schema.collection(coll)?;
+    let names: Vec<String> = bundle.items.keys().cloned().collect();
+    let deps = dependency_edges(schema, &names)?;
+    for coll in topo_order(&names, &deps) {
+        let info = schema.collection(&coll)?;
         let nk = info.def.sync.natural_key.clone();
         if nk.is_empty() {
             continue;
         }
-        for it in list.iter_mut() {
+        let mut local: BTreeMap<Uuid, Uuid> = BTreeMap::new();
+        for it in bundle.items.get_mut(&coll).map(|l| l.iter_mut()).into_iter().flatten() {
             let Some(id) = item_id(it) else { continue };
-            if crate::items::exists(&mut *conn, coll, id).await? {
+            if crate::items::exists(&mut *conn, &coll, id).await? {
                 continue;
             }
             let mut sql = Sql::new();
@@ -563,15 +568,20 @@ async fn run_import(conn: &mut PgConnection, imp: &mut Importer<'_>, storage: &d
             }
             let found = raw_select(&mut *conn, &info, &conds.join(" AND "), sql.params).await?;
             if let Some(target_id) = found.first().and_then(item_id) {
-                remap.entry(coll.clone()).or_default().insert(id, target_id);
+                local.insert(id, target_id);
                 it.insert("id".into(), Value::String(target_id.to_string()));
             }
+        }
+        if !local.is_empty() {
+            let mut single = BTreeMap::new();
+            single.insert(coll.clone(), local.clone());
+            apply_remap(schema, bundle, &single)?;
+            remap.insert(coll, local);
         }
     }
     if !remap.is_empty() {
         let n: usize = remap.values().map(|m| m.len()).sum();
         imp.report.warnings.push(format!("{n} item(s) matched by natural key: ids remapped to the target ones"));
-        apply_remap(schema, bundle, &remap)?;
     }
 
     // 3. user references that do not exist in the target -> null
@@ -629,17 +639,7 @@ async fn run_import(conn: &mut PgConnection, imp: &mut Importer<'_>, storage: &d
 
     // 5. collections in dependency order
     let names: Vec<String> = bundle.items.keys().cloned().collect();
-    let mut deps = vec![];
-    for name in &names {
-        let info = schema.collection(name)?;
-        for f in info.columns() {
-            if let Some(r) = f.related_collection() {
-                if f.ty.is_m2o_like() && names.iter().any(|n| n == r) {
-                    deps.push((name.clone(), r.to_string()));
-                }
-            }
-        }
-    }
+    let deps = dependency_edges(schema, &names)?;
     for name in topo_order(&names, &deps) {
         let info = schema.collection(&name)?;
         let list = bundle.items.remove(&name).unwrap_or_default();
@@ -658,6 +658,22 @@ async fn run_import(conn: &mut PgConnection, imp: &mut Importer<'_>, storage: &d
     // 7. every foreign key must hold now (also in dry-run)
     sqlx::query("SET CONSTRAINTS ALL IMMEDIATE").execute(&mut *conn).await?;
     Ok(())
+}
+
+/// `(child, parent)` for every m2o-like column of a collection in `names` that points to another collection in `names`.
+fn dependency_edges(schema: &Schema, names: &[String]) -> Result<Vec<(String, String)>> {
+    let mut deps = vec![];
+    for name in names {
+        let info = schema.collection(name)?;
+        for f in info.columns() {
+            if let Some(r) = f.related_collection() {
+                if f.ty.is_m2o_like() && names.iter().any(|n| n == r) {
+                    deps.push((name.clone(), r.to_string()));
+                }
+            }
+        }
+    }
+    Ok(deps)
 }
 
 /// Keep the set of imported ids per collection for prune (stored under a reserved key).
@@ -733,7 +749,7 @@ async fn prune(conn: &mut PgConnection, imp: &mut Importer<'_>, bundle: &Bundle)
                 continue;
             }
             let required = rinfo.field(ff).map(|x| x.required).unwrap_or(false);
-            let delete = required || matches!(f.ty, FieldType::M2m | FieldType::M2a);
+            let delete = required || matches!(f.ty, FieldType::M2m | FieldType::M2a | FieldType::Translations);
             let before = raw_by_ids(&mut *conn, &rinfo, &stale).await?;
             for row in &before {
                 let Some(id) = item_id(row) else { continue };

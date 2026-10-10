@@ -28,6 +28,7 @@ pub mod project;
 pub mod report;
 pub mod sdl;
 pub mod system;
+pub mod translations;
 pub mod validate;
 
 pub use model::*;

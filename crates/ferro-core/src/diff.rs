@@ -63,7 +63,7 @@ impl Change {
                     } else {
                         Risk::Destructive
                     }
-                } else if (!before.required && after.required) || (!before.unique && after.unique) {
+                } else if (!before.required && after.required) || (!before.unique && after.unique) || (before.unique_with != after.unique_with && after.unique) {
                     Risk::Risky
                 } else {
                     Risk::Safe
@@ -151,6 +151,9 @@ pub fn describe_field_change(before: &Field, after: &Field) -> Vec<String> {
     }
     if before.unique != after.unique {
         out.push(if after.unique { "unique".into() } else { "not unique".into() });
+    }
+    if before.unique_with != after.unique_with {
+        out.push(if after.unique_with.is_empty() { "unique alone".into() } else { format!("unique together with {}", after.unique_with.join(", ")) });
     }
     if before.indexed != after.indexed {
         out.push(if after.indexed { "indexed".into() } else { "not indexed".into() });
